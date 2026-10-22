@@ -720,8 +720,8 @@ COMMENT ON COLUMN vehicle.image_url IS 'Đường dẫn ảnh xe (tuỳ chọn).
 COMMENT ON COLUMN vehicle.notes IS 'Ghi chú.';
 COMMENT ON COLUMN vehicle.vehicle_type_id IS 'Loại xe (CAR, EV).';
 COMMENT ON COLUMN vehicle.customer_id IS 'Chủ xe (FK → customer).';
-COMMENT ON COLUMN vehicle.ticket_type_id IS 'Loại vé đang hiệu lực, đồng bộ tự động từ bảng ticket.';
-COMMENT ON COLUMN vehicle.ticket_expires_at IS 'Hạn vé đang hiệu lực, đồng bộ tự động; cùng NULL hoặc cùng có giá trị với ticket_type_id.';
+COMMENT ON COLUMN vehicle.ticket_type_id IS 'Loại vé đang hiệu lực của xe.';
+COMMENT ON COLUMN vehicle.ticket_expires_at IS 'Hạn vé đang hiệu lực; cùng NULL hoặc cùng có giá trị với ticket_type_id.';
 COMMENT ON COLUMN vehicle.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
 COMMENT ON COLUMN vehicle.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
 COMMENT ON COLUMN vehicle.updated_at IS 'Thời điểm sửa gần nhất.';
@@ -1241,7 +1241,7 @@ CREATE INDEX idx_ticket_ticket_type_id ON ticket (ticket_type_id) WHERE deleted_
 CREATE INDEX idx_ticket_status_effective ON ticket (status, effective_to) WHERE deleted_at IS NULL;
 CREATE INDEX idx_ticket_stat_active ON ticket (created_at) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE ticket IS 'Lưu vé đã phát hành gắn một xe, một khách và một ô cố định trong khoảng hiệu lực. EXCLUDE chống hai vé chồng hiệu lực trên một ô; trạng thái hết hạn được tự cập nhật.';
+COMMENT ON TABLE ticket IS 'Lưu vé đã phát hành gắn một xe, một khách và một ô cố định trong khoảng hiệu lực. EXCLUDE chống hai vé chồng hiệu lực trên một ô.';
 COMMENT ON COLUMN ticket.id IS 'Khoá chính, tự tăng (sequence).';
 COMMENT ON COLUMN ticket.code IS 'Mã vé (VT0001...); duy nhất trong vé chưa xoá.';
 COMMENT ON COLUMN ticket.vehicle_id IS 'Xe được cấp vé; cùng customer_id tạo khoá ngoại ghép bảo đảm xe thuộc đúng chủ vé.';
