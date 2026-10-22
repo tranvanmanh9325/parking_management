@@ -1,34 +1,30 @@
 -- =============================================================================
 -- FILE: db/01-schema.sql
--- PROJECT: Car Parking Lot Management System Backend (parking_management_backend)
--- TARGET ENGINE: PostgreSQL 18.6
--- DESCRIPTION:
---   Enterprise-grade relational database schema (Schema v2 — Frontend-First).
---   Primary source: Frontend export (`Parking Project`, 11 PNG screens) and
---   Team Lead Decisions TL-01 through TL-41.
---   Secondary source: SRS v4.1 (`Quan ly bai dau xe oto_SRS_v4.1.docx`) where
---   the Frontend is silent.
---   Strictly adheres to ADR-0003 (Soft Delete & ON DELETE RESTRICT), ADR-0004
---   (OWASP Persistent Login Token), and Rule 05 (PostgreSQL Data Modeling).
---   NOTE: Pure creation script. Zero destructive statements are permitted.
---   SCOPE (database-design stage): tables, constraints, indexes, comments and
---   analytical views only. Triggers and business-logic functions are removed
---   for this stage; only fn_normalize_license_plate remains because generated
---   columns depend on it.
+-- DỰ ÁN: Hệ thống quản lý bãi đỗ xe ô tô (parking_management)
+-- CƠ SỞ DỮ LIỆU: PostgreSQL
+-- MÔ TẢ:
+--   Lược đồ cơ sở dữ liệu quan hệ của hệ thống quản lý bãi đỗ xe ô tô.
+--   Quy ước chung: xoá mềm (deleted_at, deleted_by), khoá lạc quan (row_version)
+--   và mọi khoá ngoại đều ON DELETE RESTRICT.
+--   Tập lệnh chỉ tạo mới, không có câu lệnh phá huỷ dữ liệu.
+--   PHẠM VI (giai đoạn thiết kế cơ sở dữ liệu): chỉ gồm bảng, ràng buộc, chỉ mục,
+--   chú thích và các view thống kê. Trigger và hàm nghiệp vụ được lược bỏ ở giai
+--   đoạn này; chỉ giữ fn_normalize_license_plate vì các cột sinh tự động phụ thuộc
+--   vào hàm đó.
 -- =============================================================================
 
 BEGIN;
 
 SET client_encoding = 'UTF8';
 
--- Required for temporal exclusion constraints combining BIGINT with TSTZRANGE (TL-04, TL-10, TL-15)
+-- Cần cho ràng buộc loại trừ theo thời gian, kết hợp BIGINT với TSTZRANGE
 CREATE EXTENSION btree_gist;
 
--- Required for partial GIN trigram indexes for fast substring search (TL-41, F6)
+-- Cần cho chỉ mục GIN trigram (một phần) giúp tìm chuỗi con nhanh
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 -- =============================================================================
--- SECTION 0: CANONICAL NORMALIZATION FUNCTIONS (TL-05, TL-08, TL-15, OQ-75)
+-- PHẦN 0: CÁC HÀM CHUẨN HOÁ DỮ LIỆU
 -- =============================================================================
 
 CREATE FUNCTION fn_normalize_license_plate(p_input TEXT)
@@ -40,16 +36,14 @@ AS $$
     SELECT UPPER(REGEXP_REPLACE(p_input, '[^A-Za-z0-9]', '', 'g'));
 $$;
 
-COMMENT ON FUNCTION fn_normalize_license_plate(TEXT) IS 'Normalizes vehicle license plates by stripping non-alphanumeric separators (dots, hyphens, spaces) and converting to uppercase for canonical uniqueness and barrier matching (TL-05, TL-08, TL-15, OQ-75).';
+COMMENT ON FUNCTION fn_normalize_license_plate(TEXT) IS 'Chuẩn hoá biển số xe: bỏ ký tự phân cách (dấu chấm, gạch ngang, khoảng trắng) và đổi sang chữ hoa để so khớp và kiểm tra trùng biển số.';
 
 -- =============================================================================
--- SECTION 1: AUTHENTICATION & ACCESS CONTROL MODULE (TL-01, TL-15, SRS 4.1)
+-- PHẦN 1: XÁC THỰC VÀ PHÂN QUYỀN
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 1.1. Table: account
--- Source: Frontend `login-container.png` ("Email hoặc Số điện thoại", "Mật khẩu",
---         "Ghi nhớ đăng nhập", "Quên mật khẩu?", "Đăng ký ngay"), TL-01, TL-15
+-- 1.1. Bảng: account
 -- -----------------------------------------------------------------------------
 CREATE TABLE account (
     id BIGSERIAL,
@@ -94,23 +88,22 @@ CREATE INDEX idx_account_role_active
     ON account (role)
     WHERE deleted_at IS NULL AND is_active = TRUE;
 
-COMMENT ON TABLE account IS 'System authentication accounts using email or phone login identifiers and supporting self-registered customers (login-container.png, TL-01, TL-15).';
-COMMENT ON COLUMN account.id IS 'Primary key identifier of the system account.';
-COMMENT ON COLUMN account.email IS 'Login email address for authentication ("Email hoặc Số điện thoại" on login-container.png, TL-01); case-insensitively unique via lower(email) among active accounts when present (TL-21, OQ-84).';
-COMMENT ON COLUMN account.phone IS 'Login phone number (9-15 digits) for authentication ("Email hoặc Số điện thoại" on login-container.png, TL-01); unique among active accounts when present.';
-COMMENT ON COLUMN account.password_hash IS 'Cryptographic password hash (Argon2id/PBKDF2) for "Mật khẩu" on login-container.png (TL-01, ADR-0004).';
-COMMENT ON COLUMN account.role IS 'Authorization role: MANAGER (Quản lý), EMPLOYEE (Nhân viên), or CUSTOMER (Khách hàng self-registration per TL-01, OQ-03, OQ-55).';
-COMMENT ON COLUMN account.is_active IS 'Account activation status flag ("Khoá tài khoản" on Quản lý nhân viên, TL-01, TL-11).';
-COMMENT ON COLUMN account.last_login_at IS 'Timestamp of the most recent successful authentication.';
-COMMENT ON COLUMN account.row_version IS 'Optimistic concurrency control version counter incremented automatically on update (TL-15, OQ-64).';
-COMMENT ON COLUMN account.created_at IS 'Record creation timestamp (TIMESTAMPTZ).';
-COMMENT ON COLUMN account.updated_at IS 'Record last modification timestamp (TIMESTAMPTZ).';
-COMMENT ON COLUMN account.deleted_at IS 'Soft deletion timestamp; NULL indicates active record (ADR-0003, TL-15).';
-COMMENT ON COLUMN account.deleted_by IS 'Foreign key referencing the account that performed soft deletion (ADR-0003, TL-15).';
+COMMENT ON TABLE account IS 'Lưu danh tính đăng nhập (email hoặc số điện thoại), băm mật khẩu và vai trò. Nhân viên và khách hàng liên kết với tài khoản qua cột account_id của bảng của họ. Tách tài khoản khỏi hồ sơ giúp một người có thể chưa có đăng nhập mà vẫn có hồ sơ.';
+COMMENT ON COLUMN account.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN account.email IS 'Email đăng nhập; duy nhất không phân biệt hoa thường trong các tài khoản chưa xoá mềm.';
+COMMENT ON COLUMN account.phone IS 'Số điện thoại đăng nhập (9-15 chữ số); duy nhất trong các tài khoản chưa xoá mềm. Phải có email hoặc phone.';
+COMMENT ON COLUMN account.password_hash IS 'Chuỗi băm mật khẩu (Argon2id/PBKDF2). Không bao giờ lưu mật khẩu thô.';
+COMMENT ON COLUMN account.role IS 'Vai trò phân quyền: MANAGER, EMPLOYEE hoặc CUSTOMER.';
+COMMENT ON COLUMN account.is_active IS 'Cờ kích hoạt; FALSE tương ứng chức năng "Khoá tài khoản".';
+COMMENT ON COLUMN account.last_login_at IS 'Thời điểm đăng nhập thành công gần nhất.';
+COMMENT ON COLUMN account.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN account.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN account.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN account.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN account.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 1.2. Table: persistent_login_token
--- Source: Frontend `login-container.png` ("Ghi nhớ đăng nhập"), TL-01, TL-15, ADR-0004
+-- 1.2. Bảng: persistent_login_token
 -- -----------------------------------------------------------------------------
 CREATE TABLE persistent_login_token (
     id BIGSERIAL,
@@ -134,20 +127,19 @@ CREATE TABLE persistent_login_token (
 CREATE INDEX idx_plt_account_id ON persistent_login_token (account_id);
 CREATE INDEX idx_plt_expires_at ON persistent_login_token (expires_at);
 
-COMMENT ON TABLE persistent_login_token IS 'OWASP Series/Token persistent login store for "Ghi nhớ đăng nhập" (login-container.png, TL-01, TL-15, ADR-0004, OQ-01).';
-COMMENT ON COLUMN persistent_login_token.id IS 'Primary key identifier of the persistent login token.';
-COMMENT ON COLUMN persistent_login_token.series IS 'Unique token series identifier for theft detection across rotations.';
-COMMENT ON COLUMN persistent_login_token.token_hash IS 'SHA-256 cryptographic hash of the rotating single-use remember-me token.';
-COMMENT ON COLUMN persistent_login_token.account_id IS 'Foreign key referencing the authenticated account.';
-COMMENT ON COLUMN persistent_login_token.ip_address IS 'Client IPv4/IPv6 address recorded at session issuance.';
-COMMENT ON COLUMN persistent_login_token.user_agent IS 'Client browser User-Agent string recorded at session issuance.';
-COMMENT ON COLUMN persistent_login_token.created_at IS 'Timestamp when the persistent session was initially established.';
-COMMENT ON COLUMN persistent_login_token.last_used_at IS 'Timestamp when the token was most recently rotated.';
-COMMENT ON COLUMN persistent_login_token.expires_at IS 'Expiration timestamp after which the persistent token is invalid.';
+COMMENT ON TABLE persistent_login_token IS 'Kho token cho tính năng "Ghi nhớ đăng nhập" theo mẫu series/token: mỗi lần dùng, token được xoay vòng còn series giữ nguyên; token lạ cùng series báo hiệu bị đánh cắp. Chỉ lưu giá trị băm, không lưu token thô.';
+COMMENT ON COLUMN persistent_login_token.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN persistent_login_token.series IS 'Mã chuỗi cố định qua các lần xoay token, dùng phát hiện đánh cắp; duy nhất.';
+COMMENT ON COLUMN persistent_login_token.token_hash IS 'Băm SHA-256 của token ghi nhớ dùng một lần (token thô chỉ nằm trong cookie).';
+COMMENT ON COLUMN persistent_login_token.account_id IS 'Tài khoản sở hữu (FK → account).';
+COMMENT ON COLUMN persistent_login_token.ip_address IS 'IP lúc cấp token.';
+COMMENT ON COLUMN persistent_login_token.user_agent IS 'User-Agent trình duyệt lúc cấp token.';
+COMMENT ON COLUMN persistent_login_token.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN persistent_login_token.last_used_at IS 'Lần xoay token gần nhất.';
+COMMENT ON COLUMN persistent_login_token.expires_at IS 'Hết hạn (phải sau created_at).';
 
 -- -----------------------------------------------------------------------------
--- 1.3. Table: password_reset_token
--- Source: Frontend `login-container.png` ("Quên mật khẩu?") & `Quản lý nhân viên` ("Đặt lại mật khẩu"), TL-01, TL-15
+-- 1.3. Bảng: password_reset_token
 -- -----------------------------------------------------------------------------
 CREATE TABLE password_reset_token (
     id BIGSERIAL,
@@ -167,22 +159,21 @@ CREATE TABLE password_reset_token (
 
 CREATE INDEX idx_prt_account_id ON password_reset_token (account_id);
 
-COMMENT ON TABLE password_reset_token IS 'Single-use cryptographic token store for "Quên mật khẩu?" and "Đặt lại mật khẩu" (login-container.png, TL-01, TL-15, SCO-05).';
-COMMENT ON COLUMN password_reset_token.id IS 'Primary key identifier of the password reset token.';
-COMMENT ON COLUMN password_reset_token.account_id IS 'Foreign key referencing the account requesting password recovery.';
-COMMENT ON COLUMN password_reset_token.token_hash IS 'Cryptographic hash of the one-time reset token.';
-COMMENT ON COLUMN password_reset_token.expires_at IS 'Token expiration timestamp.';
-COMMENT ON COLUMN password_reset_token.used_at IS 'Timestamp when the token was consumed; NULL if unused.';
-COMMENT ON COLUMN password_reset_token.requested_ip IS 'Requester IPv4/IPv6 address for security auditing.';
-COMMENT ON COLUMN password_reset_token.created_at IS 'Token generation timestamp.';
+COMMENT ON TABLE password_reset_token IS 'Kho token dùng một lần cho "Quên mật khẩu" và "Đặt lại mật khẩu". Chỉ lưu băm; token hết hạn hoặc đã dùng (used_at) không còn hiệu lực. Bảng này cho phép DELETE trực tiếp để dọn token.';
+COMMENT ON COLUMN password_reset_token.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN password_reset_token.account_id IS 'Tài khoản yêu cầu đặt lại mật khẩu (FK → account).';
+COMMENT ON COLUMN password_reset_token.token_hash IS 'Giá trị băm của token dùng một lần; duy nhất. Token thô không lưu.';
+COMMENT ON COLUMN password_reset_token.expires_at IS 'Thời điểm hết hạn (phải sau created_at).';
+COMMENT ON COLUMN password_reset_token.used_at IS 'Thời điểm đã dùng; NULL nếu chưa dùng.';
+COMMENT ON COLUMN password_reset_token.requested_ip IS 'Địa chỉ IP nơi yêu cầu (phục vụ kiểm tra an ninh).';
+COMMENT ON COLUMN password_reset_token.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
 
 -- =============================================================================
--- SECTION 2: HUMAN RESOURCES & ADMINISTRATIVE GEOGRAPHY (TL-11, TL-15, SRS 4.3)
+-- PHẦN 2: NHÂN SỰ VÀ ĐỊA GIỚI HÀNH CHÍNH
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 2.1. Table: position
--- Source: Frontend `Quản lý nhân viên - Smart mobility.png` ("Chức vụ: 4" — Quản lý, Nhân viên vận hành, Nhân viên thu ngân, Kỹ thuật viên), TL-11
+-- 2.1. Bảng: position
 -- -----------------------------------------------------------------------------
 CREATE TABLE position (
     id BIGSERIAL,
@@ -213,20 +204,19 @@ CREATE UNIQUE INDEX uq_position_name_active
     ON position (name)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE position IS 'Employee job position lookup catalog ("Chức vụ" on Quản lý nhân viên - Smart mobility.png: Quản lý, Nhân viên vận hành, Nhân viên thu ngân, Kỹ thuật viên; TL-11).';
-COMMENT ON COLUMN position.id IS 'Primary key identifier of the job position.';
-COMMENT ON COLUMN position.code IS 'Unique business code for the position (e.g., QL, NVVH, NVTN, KTV).';
-COMMENT ON COLUMN position.name IS 'Display name of the job position in Vietnamese (TL-11).';
-COMMENT ON COLUMN position.description IS 'Optional description of position duties and access scope.';
-COMMENT ON COLUMN position.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN position.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN position.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN position.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN position.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE position IS 'Danh mục chức vụ (Quản lý, Nhân viên vận hành, Nhân viên thu ngân, Kỹ thuật viên).';
+COMMENT ON COLUMN position.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN position.code IS 'Mã chức vụ (QL, NVVH, NVTN, KTV); duy nhất.';
+COMMENT ON COLUMN position.name IS 'Tên chức vụ; duy nhất.';
+COMMENT ON COLUMN position.description IS 'Mô tả (tuỳ chọn).';
+COMMENT ON COLUMN position.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN position.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN position.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN position.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN position.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 2.2. Tables: administrative_province, administrative_district, administrative_ward
--- Source: Frontend `Quản lý nhân viên — Smart Mobility.png` ("Khu vực"), SRS 4.3.2 & 4.4.3, TL-11, TL-15, OQ-50, OQ-62
+-- 2.2. Các bảng: administrative_province, administrative_district, administrative_ward
 -- -----------------------------------------------------------------------------
 CREATE TABLE administrative_province (
     id BIGINT GENERATED BY DEFAULT AS IDENTITY,
@@ -241,12 +231,12 @@ CREATE TABLE administrative_province (
 
 CREATE INDEX idx_admin_province_name ON administrative_province (name);
 
-COMMENT ON TABLE administrative_province IS 'Provincial-level administrative division lookup ("Khu vực" on Quản lý nhân viên, SRS 4.3.2, 4.4.3, TL-11, TL-15, OQ-50, OQ-62).';
-COMMENT ON COLUMN administrative_province.id IS 'Primary key identifier of the province/municipality.';
-COMMENT ON COLUMN administrative_province.code IS 'Unique administrative code of the province.';
-COMMENT ON COLUMN administrative_province.name IS 'Official Vietnamese name of the province or centrally-run city.';
-COMMENT ON COLUMN administrative_province.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN administrative_province.updated_at IS 'Record modification timestamp.';
+COMMENT ON TABLE administrative_province IS 'Danh mục tỉnh/thành phố, dùng cho địa chỉ của nhân viên và khách hàng. Bất biến, không xoá cứng.';
+COMMENT ON COLUMN administrative_province.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN administrative_province.code IS 'Mã tỉnh/thành, duy nhất.';
+COMMENT ON COLUMN administrative_province.name IS 'Tên tỉnh/thành phố.';
+COMMENT ON COLUMN administrative_province.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN administrative_province.updated_at IS 'Thời điểm sửa gần nhất.';
 
 CREATE TABLE administrative_district (
     id BIGINT GENERATED BY DEFAULT AS IDENTITY,
@@ -265,13 +255,13 @@ CREATE TABLE administrative_district (
 
 CREATE INDEX idx_admin_district_province ON administrative_district (province_id);
 
-COMMENT ON TABLE administrative_district IS 'District-level administrative lookup ("Khu vực" on Quản lý nhân viên, SRS 4.3.2, TL-11, TL-15, OQ-50, OQ-62).';
-COMMENT ON COLUMN administrative_district.id IS 'Primary key identifier of the district.';
-COMMENT ON COLUMN administrative_district.province_id IS 'Foreign key referencing parent province (ON DELETE RESTRICT).';
-COMMENT ON COLUMN administrative_district.code IS 'Unique administrative district code.';
-COMMENT ON COLUMN administrative_district.name IS 'Vietnamese name of the district/county/town.';
-COMMENT ON COLUMN administrative_district.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN administrative_district.updated_at IS 'Record modification timestamp.';
+COMMENT ON TABLE administrative_district IS 'Danh mục quận/huyện thuộc tỉnh. Khoá duy nhất (id, province_id) để các bảng khác ràng buộc đúng phân cấp.';
+COMMENT ON COLUMN administrative_district.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN administrative_district.province_id IS 'Tỉnh/thành chứa quận/huyện (FK → administrative_province).';
+COMMENT ON COLUMN administrative_district.code IS 'Mã quận/huyện, duy nhất.';
+COMMENT ON COLUMN administrative_district.name IS 'Tên quận/huyện.';
+COMMENT ON COLUMN administrative_district.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN administrative_district.updated_at IS 'Thời điểm sửa gần nhất.';
 
 CREATE TABLE administrative_ward (
     id BIGINT GENERATED BY DEFAULT AS IDENTITY,
@@ -290,18 +280,16 @@ CREATE TABLE administrative_ward (
 
 CREATE INDEX idx_admin_ward_district ON administrative_ward (district_id);
 
-COMMENT ON TABLE administrative_ward IS 'Commune/ward-level administrative lookup (SRS 4.3.2, TL-11, TL-15, OQ-50, OQ-62).';
-COMMENT ON COLUMN administrative_ward.id IS 'Primary key identifier of the ward/commune.';
-COMMENT ON COLUMN administrative_ward.district_id IS 'Foreign key referencing parent district (ON DELETE RESTRICT).';
-COMMENT ON COLUMN administrative_ward.code IS 'Unique administrative ward code.';
-COMMENT ON COLUMN administrative_ward.name IS 'Vietnamese name of the ward/commune/township.';
-COMMENT ON COLUMN administrative_ward.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN administrative_ward.updated_at IS 'Record modification timestamp.';
+COMMENT ON TABLE administrative_ward IS 'Danh mục phường/xã thuộc quận/huyện, với khoá duy nhất (id, district_id) tương tự.';
+COMMENT ON COLUMN administrative_ward.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN administrative_ward.district_id IS 'Quận/huyện chứa phường/xã (FK → administrative_district).';
+COMMENT ON COLUMN administrative_ward.code IS 'Mã phường/xã, duy nhất.';
+COMMENT ON COLUMN administrative_ward.name IS 'Tên phường/xã.';
+COMMENT ON COLUMN administrative_ward.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN administrative_ward.updated_at IS 'Thời điểm sửa gần nhất.';
 
 -- -----------------------------------------------------------------------------
--- 2.3. Table: employee
--- Source: Frontend `Quản lý nhân viên - Smart mobility.png` (Mã NV NV001..NV008 and NV0005,
---         Trạng thái Đang hoạt động / Ngừng hoạt động, Chức vụ, Khu vực), TL-11, TL-15, TL-18
+-- 2.3. Bảng: employee
 -- -----------------------------------------------------------------------------
 CREATE TABLE employee (
     id BIGSERIAL,
@@ -379,36 +367,34 @@ CREATE INDEX idx_employee_status_active ON employee (status) WHERE deleted_at IS
 CREATE INDEX idx_employee_full_name ON employee (full_name) WHERE deleted_at IS NULL;
 CREATE INDEX idx_employee_district_province ON employee (district_id, province_id) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE employee IS 'Employee HR records with code format NV + 3 or 4 digits (NV005 / NV0005), operational status (ACTIVE / INACTIVE), and 3-level address hierarchy (Quản lý nhân viên - Smart mobility.png, TL-11, TL-15, TL-18).';
-COMMENT ON COLUMN employee.id IS 'Primary key identifier of the employee.';
-COMMENT ON COLUMN employee.code IS 'Employee code matching ^NV[0-9]{3,4}$ (supports both NV001..NV008 and NV0005 on Quản lý nhân viên, TL-11, OQ-48).';
-COMMENT ON COLUMN employee.full_name IS 'Full name of the employee ("Họ và tên", max 45 chars, required per TL-18).';
-COMMENT ON COLUMN employee.date_of_birth IS 'Optional employee date of birth ("Ngày sinh", must be in the past when provided, TL-18).';
-COMMENT ON COLUMN employee.gender IS 'Optional employee gender ("Giới tính": Nam or Nữ when provided, TL-18).';
-COMMENT ON COLUMN employee.identity_card_number IS 'Optional national ID / CCCD number ("Số CCCD / CMND", 9-20 digits, unique among active non-null rows, TL-18).';
-COMMENT ON COLUMN employee.phone IS 'Employee contact phone number ("Số điện thoại", 9-15 digits, required per TL-18).';
-COMMENT ON COLUMN employee.email IS 'Employee work email address ("Email công việc", required per TL-18 and case-insensitively unique via lower(email) among active rows per TL-21, OQ-84).';
-COMMENT ON COLUMN employee.address IS 'Optional detailed street address ("Địa chỉ chi tiết", TL-18).';
-COMMENT ON COLUMN employee.province_id IS 'Foreign key referencing administrative_province ("Tỉnh / Thành phố", TL-11, OQ-62).';
-COMMENT ON COLUMN employee.district_id IS 'Foreign key referencing administrative_district ("Quận / Huyện", TL-11, OQ-62).';
-COMMENT ON COLUMN employee.ward_id IS 'Foreign key referencing administrative_ward ("Phường / Xã", TL-11, OQ-62).';
-COMMENT ON COLUMN employee.position_id IS 'Foreign key referencing job position ("Chức vụ", TL-11).';
-COMMENT ON COLUMN employee.account_id IS 'Optional foreign key referencing system login account (OQ-56, TL-11).';
-COMMENT ON COLUMN employee.status IS 'Employment operational status: ACTIVE ("Đang hoạt động") or INACTIVE ("Ngừng hoạt động" / "Tạm nghỉ", TL-11).';
-COMMENT ON COLUMN employee.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN employee.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN employee.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN employee.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN employee.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE employee IS 'Hồ sơ nhân viên: mã NV, họ tên, liên hệ, chức vụ, địa chỉ ba cấp và trạng thái làm việc. Có thể liên kết một tài khoản đăng nhập.';
+COMMENT ON COLUMN employee.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN employee.code IS 'Mã nhân viên dạng NV + 3-4 chữ số (NV005, NV0005).';
+COMMENT ON COLUMN employee.full_name IS 'Họ và tên (bắt buộc, tối đa 45 ký tự).';
+COMMENT ON COLUMN employee.date_of_birth IS 'Ngày sinh (tuỳ chọn, phải ở quá khứ).';
+COMMENT ON COLUMN employee.gender IS 'Giới tính, chỉ nhận "Nam" hoặc "Nữ" khi có giá trị.';
+COMMENT ON COLUMN employee.identity_card_number IS 'Số CCCD/CMND (tuỳ chọn, 9-20 chữ số); duy nhất trong nhân viên chưa xoá.';
+COMMENT ON COLUMN employee.phone IS 'Số điện thoại (9-15 chữ số, bắt buộc); duy nhất trong nhân viên chưa xoá.';
+COMMENT ON COLUMN employee.email IS 'Email công việc (bắt buộc); duy nhất không phân biệt hoa thường.';
+COMMENT ON COLUMN employee.address IS 'Địa chỉ chi tiết (tuỳ chọn).';
+COMMENT ON COLUMN employee.province_id IS 'Tỉnh/thành (FK → administrative_province).';
+COMMENT ON COLUMN employee.district_id IS 'Quận/huyện; cặp (district_id, province_id) phải khớp phân cấp.';
+COMMENT ON COLUMN employee.ward_id IS 'Phường/xã; cặp (ward_id, district_id) phải khớp phân cấp.';
+COMMENT ON COLUMN employee.position_id IS 'Chức vụ (FK → position, bắt buộc).';
+COMMENT ON COLUMN employee.account_id IS 'Tài khoản đăng nhập của nhân viên (tuỳ chọn); mỗi tài khoản gắn tối đa một nhân viên.';
+COMMENT ON COLUMN employee.status IS 'Trạng thái làm việc: ACTIVE hoặc INACTIVE.';
+COMMENT ON COLUMN employee.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN employee.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN employee.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN employee.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN employee.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- =============================================================================
--- SECTION 3: CUSTOMER, BLACKLIST & VEHICLE MANAGEMENT (TL-08, TL-09, TL-15, TL-18)
+-- PHẦN 3: KHÁCH HÀNG, DANH SÁCH ĐEN VÀ XE
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 3.1. Table: customer
--- Source: Frontend `Khách hàng — Smart Mobility.png` ("Tổng khách hàng", "Đang hoạt động",
---         "Tạm ngừng", "Blacklist/Tạm khoá"), TL-08, TL-15, TL-18
+-- 3.1. Bảng: customer
 -- -----------------------------------------------------------------------------
 CREATE TABLE customer (
     id BIGSERIAL,
@@ -491,38 +477,37 @@ CREATE INDEX idx_customer_full_name ON customer (full_name) WHERE deleted_at IS 
 CREATE INDEX idx_customer_status_active ON customer (status) WHERE deleted_at IS NULL;
 CREATE INDEX idx_customer_district_province ON customer (district_id, province_id) WHERE deleted_at IS NULL;
 
--- Trigram GIN indexes for fast frontend substring/ILIKE search (TL-41, F6)
+-- Chỉ mục GIN trigram giúp tìm kiếm chuỗi con/ILIKE nhanh
 CREATE INDEX idx_customer_full_name_trgm ON customer USING gin (full_name gin_trgm_ops) WHERE deleted_at IS NULL;
 CREATE INDEX idx_customer_phone_trgm ON customer USING gin (phone gin_trgm_ops) WHERE deleted_at IS NULL;
 CREATE INDEX idx_customer_idcard_trgm ON customer USING gin (identity_card_number gin_trgm_ops) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE customer IS 'Customer profile table with operational status (ACTIVE, SUSPENDED, BLACKLISTED) and status reason (Khách hàng — Smart Mobility.png, TL-08, TL-15, TL-18).';
-COMMENT ON COLUMN customer.id IS 'Primary key identifier of the customer.';
-COMMENT ON COLUMN customer.code IS 'Customer code ("Mã KH", e.g., KH0001..KH0004).';
-COMMENT ON COLUMN customer.full_name IS 'Full name of the customer ("Họ và tên", required per TL-18).';
-COMMENT ON COLUMN customer.date_of_birth IS 'Optional customer date of birth ("Ngày sinh", must be in the past when provided, TL-18).';
-COMMENT ON COLUMN customer.gender IS 'Optional customer gender ("Giới tính": Nam or Nữ when provided, TL-18).';
-COMMENT ON COLUMN customer.identity_card_number IS 'National ID / CCCD number ("CCCD", 9-20 digits, required per TL-18).';
-COMMENT ON COLUMN customer.phone IS 'Customer phone number ("Số điện thoại", required per TL-18).';
-COMMENT ON COLUMN customer.email IS 'Optional customer email address ("Email", case-insensitively unique via lower(email) among active non-anonymized non-null rows per TL-18, TL-21, OQ-84).';
-COMMENT ON COLUMN customer.address IS 'Optional customer residential address ("Địa chỉ", TL-18).';
-COMMENT ON COLUMN customer.province_id IS 'Optional foreign key referencing administrative_province (OQ-62).';
-COMMENT ON COLUMN customer.district_id IS 'Optional foreign key referencing administrative_district (OQ-62).';
-COMMENT ON COLUMN customer.ward_id IS 'Optional foreign key referencing administrative_ward (OQ-62).';
-COMMENT ON COLUMN customer.account_id IS 'Optional foreign key referencing self-registered customer login account (TL-01, TL-18, OQ-55).';
-COMMENT ON COLUMN customer.status IS 'Customer status: ACTIVE ("Đang hoạt động"), SUSPENDED ("Tạm ngừng"), or BLACKLISTED ("Blacklist/Tạm khoá", TL-08).';
-COMMENT ON COLUMN customer.status_reason IS 'Reason for suspension or blacklisting; required when status is BLACKLISTED (TL-08).';
-COMMENT ON COLUMN customer.is_anonymized IS 'Decree 13/2023/ND-CP PII anonymization flag (OQ-12).';
-COMMENT ON COLUMN customer.anonymized_at IS 'Timestamp when PII anonymization was executed (OQ-12).';
-COMMENT ON COLUMN customer.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN customer.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN customer.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN customer.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN customer.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE customer IS 'Hồ sơ khách hàng kèm trạng thái vận hành ACTIVE, SUSPENDED, BLACKLISTED và lý do. Có cờ ẩn danh dữ liệu cá nhân trước khi được phép xoá vĩnh viễn.';
+COMMENT ON COLUMN customer.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN customer.code IS 'Mã khách hàng ("Mã KH", ví dụ KH0011); duy nhất trong bản ghi chưa xoá.';
+COMMENT ON COLUMN customer.full_name IS 'Họ và tên (bắt buộc, tối đa 45 ký tự).';
+COMMENT ON COLUMN customer.date_of_birth IS 'Ngày sinh (tuỳ chọn, phải ở quá khứ).';
+COMMENT ON COLUMN customer.gender IS 'Giới tính, chỉ nhận "Nam" hoặc "Nữ" khi có giá trị.';
+COMMENT ON COLUMN customer.identity_card_number IS 'Số CCCD/CMND (9-20 chữ số, bắt buộc); duy nhất trong khách chưa xoá và chưa ẩn danh.';
+COMMENT ON COLUMN customer.phone IS 'Số điện thoại (9-15 chữ số, bắt buộc); duy nhất trong khách chưa xoá và chưa ẩn danh.';
+COMMENT ON COLUMN customer.email IS 'Email (tuỳ chọn); duy nhất không phân biệt hoa thường trong khách chưa xoá và chưa ẩn danh.';
+COMMENT ON COLUMN customer.address IS 'Địa chỉ chi tiết (tuỳ chọn).';
+COMMENT ON COLUMN customer.province_id IS 'Tỉnh/thành (FK → administrative_province).';
+COMMENT ON COLUMN customer.district_id IS 'Quận/huyện; cặp (district_id, province_id) phải khớp phân cấp hành chính.';
+COMMENT ON COLUMN customer.ward_id IS 'Phường/xã; cặp (ward_id, district_id) phải khớp phân cấp hành chính.';
+COMMENT ON COLUMN customer.account_id IS 'Tài khoản đăng nhập nếu khách tự đăng ký (tuỳ chọn); mỗi tài khoản gắn tối đa một khách.';
+COMMENT ON COLUMN customer.status IS 'Trạng thái vận hành: ACTIVE, SUSPENDED (tạm ngừng) hoặc BLACKLISTED.';
+COMMENT ON COLUMN customer.status_reason IS 'Lý do tạm ngừng/đưa vào danh sách đen; bắt buộc khi BLACKLISTED.';
+COMMENT ON COLUMN customer.is_anonymized IS 'Cờ đã ẩn danh dữ liệu cá nhân.';
+COMMENT ON COLUMN customer.anonymized_at IS 'Thời điểm ẩn danh; phải có giá trị khi và chỉ khi is_anonymized = TRUE.';
+COMMENT ON COLUMN customer.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN customer.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN customer.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN customer.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN customer.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 3.2. Table: plate_blacklist
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Biển số 51G-888.88 thuộc Blacklist (Nợ phí)"), TL-08, TL-15
+-- 3.2. Bảng: plate_blacklist
 -- -----------------------------------------------------------------------------
 CREATE TABLE plate_blacklist (
     id BIGSERIAL,
@@ -557,24 +542,22 @@ CREATE UNIQUE INDEX uq_plate_blacklist_norm_active
     ON plate_blacklist (license_plate_norm)
     WHERE deleted_at IS NULL AND is_active = TRUE;
 
-COMMENT ON TABLE plate_blacklist IS 'Blacklisted license plates for visitor/unregistered vehicles with reason and unpaid debt amount ("Biển số 51G-888.88 thuộc Blacklist (Nợ phí)" on Trang chủ, TL-08).';
-COMMENT ON COLUMN plate_blacklist.id IS 'Primary key identifier of the plate blacklist entry.';
-COMMENT ON COLUMN plate_blacklist.license_plate IS 'Raw license plate string as entered (e.g., 51G-888.88).';
-COMMENT ON COLUMN plate_blacklist.license_plate_norm IS 'Canonical normalized license plate computed via fn_normalize_license_plate(license_plate) (TL-08, TL-15, OQ-75).';
-COMMENT ON COLUMN plate_blacklist.reason IS 'Mandatory reason for blacklisting the license plate (e.g., Nợ phí).';
-COMMENT ON COLUMN plate_blacklist.unpaid_amount IS 'Outstanding unpaid debt amount in VND associated with the blacklisted plate (TL-08).';
-COMMENT ON COLUMN plate_blacklist.is_active IS 'Whether the blacklist entry is currently active.';
-COMMENT ON COLUMN plate_blacklist.added_by IS 'Optional foreign key referencing the employee who recorded the blacklist entry.';
-COMMENT ON COLUMN plate_blacklist.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN plate_blacklist.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN plate_blacklist.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN plate_blacklist.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN plate_blacklist.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE plate_blacklist IS 'Danh sách đen biển số cho xe vãng lai hoặc chưa đăng ký, kèm lý do và số tiền nợ. Mỗi biển chuẩn hoá chỉ có một mục đang hiệu lực.';
+COMMENT ON COLUMN plate_blacklist.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN plate_blacklist.license_plate IS 'Biển số dạng người nhập (51G-888.88).';
+COMMENT ON COLUMN plate_blacklist.license_plate_norm IS 'Biển số chuẩn hoá do fn_normalize_license_plate tự sinh (cột generated, lưu trữ).';
+COMMENT ON COLUMN plate_blacklist.reason IS 'Lý do đưa vào danh sách đen (bắt buộc).';
+COMMENT ON COLUMN plate_blacklist.unpaid_amount IS 'Số tiền còn nợ, VND (≥ 0).';
+COMMENT ON COLUMN plate_blacklist.is_active IS 'Mục đang có hiệu lực.';
+COMMENT ON COLUMN plate_blacklist.added_by IS 'Nhân viên ghi nhận (FK → employee).';
+COMMENT ON COLUMN plate_blacklist.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN plate_blacklist.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN plate_blacklist.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN plate_blacklist.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN plate_blacklist.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 3.3. Table: vehicle_type
--- Source: Frontend `Quản lý xe — Smart Mobility.png` & `Quản lý vé — Smart Mobility.png`
---         ("Ô tô", "Xe điện"), TL-09, TL-15, TL-20
+-- 3.3. Bảng: vehicle_type
 -- -----------------------------------------------------------------------------
 CREATE TABLE vehicle_type (
     id BIGSERIAL,
@@ -605,21 +588,19 @@ CREATE UNIQUE INDEX uq_vehicle_type_name_active
     ON vehicle_type (name)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE vehicle_type IS 'Vehicle classification catalog ("Loại xe": Ô tô, Xe điện on Quản lý xe and Quản lý vé; cars only per TL-09, TL-20, OQ-49).';
-COMMENT ON COLUMN vehicle_type.id IS 'Primary key identifier of the vehicle type.';
-COMMENT ON COLUMN vehicle_type.code IS 'Unique code for the vehicle type (CAR, EV per TL-20).';
-COMMENT ON COLUMN vehicle_type.name IS 'Display name of the vehicle category (Ô tô, Xe điện per TL-09, TL-20).';
-COMMENT ON COLUMN vehicle_type.description IS 'Detailed description of the vehicle category.';
-COMMENT ON COLUMN vehicle_type.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN vehicle_type.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN vehicle_type.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN vehicle_type.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN vehicle_type.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE vehicle_type IS 'Danh mục loại xe. Hiện có hai loại: CAR (Ô tô) và EV (Xe điện).';
+COMMENT ON COLUMN vehicle_type.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN vehicle_type.code IS 'Mã loại xe (CAR, EV); duy nhất.';
+COMMENT ON COLUMN vehicle_type.name IS 'Tên loại xe (Ô tô, Xe điện); duy nhất.';
+COMMENT ON COLUMN vehicle_type.description IS 'Mô tả (tuỳ chọn).';
+COMMENT ON COLUMN vehicle_type.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN vehicle_type.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN vehicle_type.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN vehicle_type.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN vehicle_type.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 3.4. Table: ticket_type
--- Source: Frontend `Quản lý vé — Smart Mobility.png` ("Vé ngày" 50.000đ, "Vé tháng" 500.000đ,
---         "Vé quý" 1.200.000đ, "Vé năm" 4.800.000đ [PROPOSAL OQ-79]), TL-10, TL-15
+-- 3.4. Bảng: ticket_type
 -- -----------------------------------------------------------------------------
 CREATE TABLE ticket_type (
     id BIGSERIAL,
@@ -654,23 +635,21 @@ CREATE UNIQUE INDEX uq_ticket_type_name_active
     ON ticket_type (name)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE ticket_type IS 'Ticket tariff catalog ("Loại vé" on Quản lý vé: Vé ngày 50.000đ, Vé tháng 500.000đ, Vé quý 1.200.000đ, Vé năm 4.800.000đ [PROPOSAL OQ-79], TL-10).';
-COMMENT ON COLUMN ticket_type.id IS 'Primary key identifier of the ticket type.';
-COMMENT ON COLUMN ticket_type.code IS 'Unique code of the ticket type (DAILY, MONTHLY, QUARTERLY, YEARLY).';
-COMMENT ON COLUMN ticket_type.name IS 'Display name of the ticket type in Vietnamese (Vé ngày, Vé tháng, Vé quý, Vé năm).';
-COMMENT ON COLUMN ticket_type.duration_days IS 'Validity duration in calendar days (1, 30, 90, 365).';
-COMMENT ON COLUMN ticket_type.default_price IS 'Default standard tariff price in VND (NUMERIC(12,2)).';
-COMMENT ON COLUMN ticket_type.description IS 'Optional tariff description and policy notes.';
-COMMENT ON COLUMN ticket_type.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN ticket_type.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN ticket_type.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN ticket_type.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN ticket_type.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE ticket_type IS 'Bảng giá loại vé: ngày, tháng, quý, năm với thời hạn và giá niêm yết.';
+COMMENT ON COLUMN ticket_type.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN ticket_type.code IS 'Mã loại vé (DAILY, MONTHLY, QUARTERLY, YEARLY).';
+COMMENT ON COLUMN ticket_type.name IS 'Tên loại vé (Vé ngày, Vé tháng...).';
+COMMENT ON COLUMN ticket_type.duration_days IS 'Thời hạn, ngày (1, 30, 90, 365; > 0).';
+COMMENT ON COLUMN ticket_type.default_price IS 'Giá niêm yết, VND (≥ 0).';
+COMMENT ON COLUMN ticket_type.description IS 'Mô tả (tuỳ chọn).';
+COMMENT ON COLUMN ticket_type.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN ticket_type.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN ticket_type.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN ticket_type.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN ticket_type.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 3.5. Table: vehicle
--- Source: Frontend `Quản lý xe — Smart Mobility.png` (Mã xe, Ảnh, Biển số & Thông tin xe,
---         Loại xe, Chủ sở hữu, Vé liên kết, Ghi chú), TL-09, TL-15, OQ-52, OQ-53, OQ-75
+-- 3.5. Bảng: vehicle
 -- -----------------------------------------------------------------------------
 CREATE TABLE vehicle (
     id BIGSERIAL,
@@ -729,34 +708,32 @@ CREATE INDEX idx_vehicle_type_id ON vehicle (vehicle_type_id) WHERE deleted_at I
 CREATE INDEX idx_vehicle_ticket_type_id ON vehicle (ticket_type_id) WHERE deleted_at IS NULL;
 CREATE INDEX idx_vehicle_plate_trgm ON vehicle USING gin (license_plate_norm gin_trgm_ops) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE vehicle IS 'Customer registered vehicles with raw display license_plate, stored generated license_plate_norm, image_url ("Ảnh"), and notes ("Ghi chú" on Quản lý xe — Smart Mobility.png, TL-09, TL-15, OQ-75).';
-COMMENT ON COLUMN vehicle.id IS 'Primary key identifier of the vehicle.';
-COMMENT ON COLUMN vehicle.code IS 'Vehicle business code ("Mã xe", e.g., XE0001..XE0008).';
-COMMENT ON COLUMN vehicle.license_plate IS 'Raw license plate string preserved as entered for UI display (e.g., 51K-992.14, 51K-992-14).';
-COMMENT ON COLUMN vehicle.license_plate_norm IS 'Canonical normalized license plate computed via fn_normalize_license_plate(license_plate) for uniqueness and barrier matching (TL-15, OQ-75).';
-COMMENT ON COLUMN vehicle.model_name IS 'Commercial vehicle model name (e.g., Camry 2.5Q, Mazda CX-5, VF 8 Plus).';
-COMMENT ON COLUMN vehicle.brand IS 'Vehicle manufacturer brand (e.g., Toyota, Mazda, VinFast; nullable per OQ-53).';
-COMMENT ON COLUMN vehicle.color IS 'Exterior color of the vehicle (e.g., Trắng, Đen, Xanh rêu).';
-COMMENT ON COLUMN vehicle.image_url IS 'Optional vehicle photo URI/path ("Ảnh" column on Quản lý xe — Smart Mobility.png, TL-09).';
-COMMENT ON COLUMN vehicle.notes IS 'Optional free-text vehicle notes ("Ghi chú" column and "Ghi chú phương tiện" on Quản lý xe — Smart Mobility.png, TL-09).';
-COMMENT ON COLUMN vehicle.vehicle_type_id IS 'Foreign key referencing vehicle_type ("Loại xe": Ô tô, Xe điện per TL-09, TL-20).';
-COMMENT ON COLUMN vehicle.customer_id IS 'Foreign key referencing the owning customer ("Chủ sở hữu (Khách hàng)").';
-COMMENT ON COLUMN vehicle.ticket_type_id IS 'Synchronized active ticket type preference (OQ-52, TL-15).';
-COMMENT ON COLUMN vehicle.ticket_expires_at IS 'Synchronized active ticket expiration timestamp (OQ-52, TL-15).';
-COMMENT ON COLUMN vehicle.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN vehicle.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN vehicle.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN vehicle.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN vehicle.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE vehicle IS 'Lưu xe của khách hàng. Biển số lưu hai dạng: dạng người nhập để hiển thị và dạng chuẩn hoá (cột generated) để so khớp, kiểm tra trùng và tìm kiếm. Đồng bộ thông tin vé đang hiệu lực từ bảng ticket.';
+COMMENT ON COLUMN vehicle.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN vehicle.code IS 'Mã xe (XE0007...); duy nhất trong xe chưa xoá.';
+COMMENT ON COLUMN vehicle.license_plate IS 'Biển số như người nhập, dùng để hiển thị (43T-814.62).';
+COMMENT ON COLUMN vehicle.license_plate_norm IS 'Biển số chuẩn hoá (43T81462), cột generated lưu trữ; duy nhất trong xe chưa xoá.';
+COMMENT ON COLUMN vehicle.model_name IS 'Dòng xe (City RS...).';
+COMMENT ON COLUMN vehicle.brand IS 'Hãng xe (tuỳ chọn).';
+COMMENT ON COLUMN vehicle.color IS 'Màu xe (tuỳ chọn).';
+COMMENT ON COLUMN vehicle.image_url IS 'Đường dẫn ảnh xe (tuỳ chọn).';
+COMMENT ON COLUMN vehicle.notes IS 'Ghi chú.';
+COMMENT ON COLUMN vehicle.vehicle_type_id IS 'Loại xe (CAR, EV).';
+COMMENT ON COLUMN vehicle.customer_id IS 'Chủ xe (FK → customer).';
+COMMENT ON COLUMN vehicle.ticket_type_id IS 'Loại vé đang hiệu lực, đồng bộ tự động từ bảng ticket.';
+COMMENT ON COLUMN vehicle.ticket_expires_at IS 'Hạn vé đang hiệu lực, đồng bộ tự động; cùng NULL hoặc cùng có giá trị với ticket_type_id.';
+COMMENT ON COLUMN vehicle.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN vehicle.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN vehicle.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN vehicle.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN vehicle.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- =============================================================================
--- SECTION 4: PARKING FACILITY HIERARCHY, SLOTS & RESERVATIONS (TL-02, TL-03, TL-04)
+-- PHẦN 4: CẤU TRÚC BÃI ĐỖ, Ô ĐỖ VÀ ĐẶT CHỖ
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 4.1. Table: parking_lot
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` & `Trang chủ — Smart Mobility.png`
---         ("Bãi đỗ xe: Bãi xe Smart Mobility"), TL-02, TL-15
+-- 4.1. Bảng: parking_lot
 -- -----------------------------------------------------------------------------
 CREATE TABLE parking_lot (
     id BIGSERIAL,
@@ -788,22 +765,21 @@ CREATE UNIQUE INDEX uq_parking_lot_name_active
     ON parking_lot (name)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE parking_lot IS 'Top-level parking facility entity ("Bãi đỗ xe: Bãi xe Smart Mobility" on Sơ đồ bãi đậu xe and Trang chủ, TL-02).';
-COMMENT ON COLUMN parking_lot.id IS 'Primary key identifier of the parking lot.';
-COMMENT ON COLUMN parking_lot.code IS 'Unique code of the parking lot (e.g., SMART_MOBILITY).';
-COMMENT ON COLUMN parking_lot.name IS 'Display name of the parking lot (e.g., Bãi xe Smart Mobility).';
-COMMENT ON COLUMN parking_lot.address IS 'Physical address or location description of the parking lot.';
-COMMENT ON COLUMN parking_lot.is_active IS 'Whether the parking facility is currently active.';
-COMMENT ON COLUMN parking_lot.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN parking_lot.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN parking_lot.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN parking_lot.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN parking_lot.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE parking_lot IS 'Lưu bãi đỗ xe, cấp cao nhất của cấu trúc bãi. Dữ liệu mẫu có một bãi "Bãi xe Smart Mobility".';
+COMMENT ON COLUMN parking_lot.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN parking_lot.code IS 'Mã bãi (SMART_MOBILITY), duy nhất.';
+COMMENT ON COLUMN parking_lot.name IS 'Tên bãi, duy nhất trong bãi chưa xoá.';
+COMMENT ON COLUMN parking_lot.address IS 'Địa chỉ bãi.';
+COMMENT ON COLUMN parking_lot.is_active IS 'Bãi đang hoạt động.';
+COMMENT ON COLUMN parking_lot.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN parking_lot.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN parking_lot.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN parking_lot.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN parking_lot.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 4.1.1. Table: booking_policy
--- Source: Advance Slot Booking Management Module (R1.3, OQ-87)
--- 1-1 policy configuration table per parking lot.
+-- 4.1.1. Bảng: booking_policy
+-- Bảng cấu hình chính sách đặt chỗ, mỗi bãi đỗ xe một chính sách đang hiệu lực.
 -- -----------------------------------------------------------------------------
 CREATE TABLE booking_policy (
     id BIGSERIAL,
@@ -845,28 +821,26 @@ CREATE UNIQUE INDEX uq_booking_policy_lot_active
     ON booking_policy (lot_id)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE booking_policy IS 'Advance slot booking policy configuration parameters (1-to-1 with parking_lot, R1.3, OQ-87).';
-COMMENT ON COLUMN booking_policy.id IS 'Primary key identifier of the booking policy.';
-COMMENT ON COLUMN booking_policy.lot_id IS 'Foreign key referencing parent parking_lot (ON DELETE RESTRICT, 1-to-1 active).';
-COMMENT ON COLUMN booking_policy.hold_minutes IS 'Duration in minutes to hold a pending booking before deposit settlement (default 15).';
-COMMENT ON COLUMN booking_policy.grace_minutes IS 'Grace arrival window in minutes past reserved_from before marking NO_SHOW (default 15).';
-COMMENT ON COLUMN booking_policy.early_checkin_minutes IS 'Permitted early arrival window in minutes before reserved_from (default 15).';
-COMMENT ON COLUMN booking_policy.max_advance_days IS 'Maximum days in advance a slot can be booked (default 7).';
-COMMENT ON COLUMN booking_policy.min_duration_minutes IS 'Minimum booking duration in minutes (default 30).';
-COMMENT ON COLUMN booking_policy.max_duration_minutes IS 'Maximum booking duration in minutes (default 1440 = 24 hours).';
-COMMENT ON COLUMN booking_policy.deposit_amount IS 'Required booking deposit amount in VND (NUMERIC(12,2), default 50000.00).';
-COMMENT ON COLUMN booking_policy.cancel_free_before_minutes IS 'Lead time in minutes before reserved_from for 100% deposit refund upon cancellation (default 60).';
-COMMENT ON COLUMN booking_policy.is_active IS 'Whether this booking policy is currently active.';
-COMMENT ON COLUMN booking_policy.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN booking_policy.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN booking_policy.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN booking_policy.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN booking_policy.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE booking_policy IS 'Lưu tham số chính sách đặt trước của một bãi (thời gian giữ chỗ, ân hạn, vào sớm, số ngày đặt trước tối đa, độ dài tối thiểu/tối đa, tiền cọc, hạn huỷ miễn phí). Mỗi bãi có tối đa một chính sách hoạt động.';
+COMMENT ON COLUMN booking_policy.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN booking_policy.lot_id IS 'Bãi đỗ áp dụng chính sách; tối đa một chính sách chưa xoá mềm cho mỗi bãi.';
+COMMENT ON COLUMN booking_policy.hold_minutes IS 'Số phút giữ chỗ chờ thanh toán cọc (mặc định 15).';
+COMMENT ON COLUMN booking_policy.grace_minutes IS 'Số phút ân hạn sau giờ bắt đầu trước khi tính NO_SHOW (mặc định 15).';
+COMMENT ON COLUMN booking_policy.early_checkin_minutes IS 'Số phút được phép vào sớm trước giờ bắt đầu (mặc định 15).';
+COMMENT ON COLUMN booking_policy.max_advance_days IS 'Số ngày tối đa được đặt trước (mặc định 7).';
+COMMENT ON COLUMN booking_policy.min_duration_minutes IS 'Thời lượng đặt tối thiểu, phút (mặc định 30, tối thiểu cho phép 15).';
+COMMENT ON COLUMN booking_policy.max_duration_minutes IS 'Thời lượng đặt tối đa, phút (mặc định 1440 = 24 giờ).';
+COMMENT ON COLUMN booking_policy.deposit_amount IS 'Tiền cọc, VND (mặc định 50.000; 0 nghĩa là không cần cọc).';
+COMMENT ON COLUMN booking_policy.cancel_free_before_minutes IS 'Huỷ trước giờ bắt đầu ít nhất bấy nhiêu phút thì hoàn đủ cọc (mặc định 60).';
+COMMENT ON COLUMN booking_policy.is_active IS 'Chính sách có đang áp dụng hay không.';
+COMMENT ON COLUMN booking_policy.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN booking_policy.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN booking_policy.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN booking_policy.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN booking_policy.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 4.2. Table: parking_floor
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` ("+ Thêm tầng", "Tầng B1",
---         "Tầng B2", "Tầng F1 - Ngoài trời", panel "Quản lý cấu trúc bãi"), TL-02
+-- 4.2. Bảng: parking_floor
 -- -----------------------------------------------------------------------------
 CREATE TABLE parking_floor (
     id BIGSERIAL,
@@ -903,22 +877,20 @@ CREATE UNIQUE INDEX uq_parking_floor_lot_name_active
 
 CREATE INDEX idx_parking_floor_lot_id ON parking_floor (lot_id) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE parking_floor IS 'Named parking floor within a parking lot ("Tầng B1", "Tầng B2", "Tầng F1" on Sơ đồ bãi đậu xe, TL-02).';
-COMMENT ON COLUMN parking_floor.id IS 'Primary key identifier of the parking floor.';
-COMMENT ON COLUMN parking_floor.lot_id IS 'Foreign key referencing parent parking_lot (ON DELETE RESTRICT).';
-COMMENT ON COLUMN parking_floor.code IS 'Short string code of the floor within the lot (e.g., B1, B2, B3, F1).';
-COMMENT ON COLUMN parking_floor.name IS 'Display name of the floor (e.g., Tầng B1, Tầng F1 - Ngoài trời).';
-COMMENT ON COLUMN parking_floor.sort_order IS 'Positive display ordering of the floor in UI tabs and trees.';
-COMMENT ON COLUMN parking_floor.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN parking_floor.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN parking_floor.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN parking_floor.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN parking_floor.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE parking_floor IS 'Lưu tầng của bãi (B1, B2, F1) kèm thứ tự hiển thị.';
+COMMENT ON COLUMN parking_floor.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN parking_floor.lot_id IS 'Bãi đỗ chứa tầng (FK → parking_lot).';
+COMMENT ON COLUMN parking_floor.code IS 'Mã tầng (B1, B2, F1...); duy nhất trong bãi.';
+COMMENT ON COLUMN parking_floor.name IS 'Tên hiển thị (Tầng B1...); duy nhất trong bãi.';
+COMMENT ON COLUMN parking_floor.sort_order IS 'Thứ tự hiển thị (> 0).';
+COMMENT ON COLUMN parking_floor.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN parking_floor.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN parking_floor.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN parking_floor.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN parking_floor.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 4.3. Table: parking_zone
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` ("+ Thêm khu", "Khu A".."Khu D",
---         "Khu VIP", panel "Quản lý cấu trúc bãi"), TL-02
+-- 4.3. Bảng: parking_zone
 -- -----------------------------------------------------------------------------
 CREATE TABLE parking_zone (
     id BIGSERIAL,
@@ -954,24 +926,20 @@ CREATE UNIQUE INDEX uq_parking_zone_floor_name_active
 
 CREATE INDEX idx_parking_zone_floor_id ON parking_zone (floor_id) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE parking_zone IS 'Named parking zone within a floor ("Khu A".."Khu D", "Khu VIP" on Sơ đồ bãi đậu xe, TL-02).';
-COMMENT ON COLUMN parking_zone.id IS 'Primary key identifier of the parking zone.';
-COMMENT ON COLUMN parking_zone.floor_id IS 'Foreign key referencing parent parking_floor (ON DELETE RESTRICT).';
-COMMENT ON COLUMN parking_zone.code IS 'Short code of the zone within the floor (e.g., KHU_A, A, VIP).';
-COMMENT ON COLUMN parking_zone.name IS 'Display name of the zone (e.g., Khu A, Khu VIP).';
-COMMENT ON COLUMN parking_zone.description IS 'Optional description of the zone (e.g., Dãy ô tô tiêu chuẩn, Khu sạc xe điện).';
-COMMENT ON COLUMN parking_zone.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN parking_zone.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN parking_zone.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN parking_zone.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN parking_zone.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE parking_zone IS 'Lưu khu trong một tầng (Khu A, Khu B, Khu VIP...).';
+COMMENT ON COLUMN parking_zone.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN parking_zone.floor_id IS 'Tầng chứa khu (FK → parking_floor).';
+COMMENT ON COLUMN parking_zone.code IS 'Mã khu; duy nhất trong tầng.';
+COMMENT ON COLUMN parking_zone.name IS 'Tên khu (Khu A, Khu VIP...); duy nhất trong tầng.';
+COMMENT ON COLUMN parking_zone.description IS 'Mô tả khu (tuỳ chọn).';
+COMMENT ON COLUMN parking_zone.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN parking_zone.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN parking_zone.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN parking_zone.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN parking_zone.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 4.4. Table: parking_slot
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` & `Main Page.png`
---         (code "A-01", slot_kind STANDARD/PRIORITY/EV_CHARGING, 5 statuses AVAILABLE/
---         OCCUPIED/RESERVED/CHARGING/MAINTENANCE, "Ghi chú", grid coordinates & dimensions),
---         TL-02, TL-03, TL-15
+-- 4.4. Bảng: parking_slot
 -- -----------------------------------------------------------------------------
 CREATE TABLE parking_slot (
     id BIGSERIAL,
@@ -1027,27 +995,26 @@ CREATE INDEX idx_parking_slot_status_active
     ON parking_slot (zone_id, status)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE parking_slot IS 'Physical parking slot belonging to a parking_zone with 5 operational statuses, 3 slot kinds, 2D map coordinates, physical dimensions, and free-text notes (Sơ đồ bãi đậu xe — Smart Mobility.png, Main Page.png, TL-02, TL-03).';
-COMMENT ON COLUMN parking_slot.id IS 'Primary key identifier of the parking slot.';
-COMMENT ON COLUMN parking_slot.zone_id IS 'Foreign key referencing parent parking_zone (TL-02).';
-COMMENT ON COLUMN parking_slot.code IS 'Display code of the slot within the zone (e.g., A-01, A10, B-01, Slot 42; TL-02).';
-COMMENT ON COLUMN parking_slot.slot_kind IS 'Physical classification of the slot: STANDARD (tiêu chuẩn), PRIORITY (xe ưu tiên), or EV_CHARGING (sạc xe điện) (TL-03).';
-COMMENT ON COLUMN parking_slot.status IS 'Operational status: AVAILABLE (Trống), OCCUPIED (Đang có xe), RESERVED (Đã đặt trước), CHARGING (Sạc xe điện), or MAINTENANCE (Bảo trì) (TL-03).';
-COMMENT ON COLUMN parking_slot.map_row IS '1-based row coordinate on the 2D zone/floor map grid (TL-02, OQ-69).';
-COMMENT ON COLUMN parking_slot.map_col IS '1-based column coordinate on the 2D zone/floor map grid (TL-02, OQ-69).';
-COMMENT ON COLUMN parking_slot.width IS 'Slot width in meters (must be > 0, SRS 4.8.2, TL-02).';
-COMMENT ON COLUMN parking_slot.length IS 'Slot length in meters (must be > 0, SRS 4.8.2, TL-02).';
-COMMENT ON COLUMN parking_slot.height IS 'Slot height clearance in meters (must be > 0, SRS 4.8.2, TL-02).';
-COMMENT ON COLUMN parking_slot.notes IS 'Optional free-text note for the slot ("Ghi chú" in Chi tiết ô đỗ on Sơ đồ bãi đậu xe, TL-03).';
-COMMENT ON COLUMN parking_slot.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN parking_slot.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN parking_slot.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN parking_slot.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN parking_slot.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE parking_slot IS 'Lưu ô đỗ vật lý với 5 trạng thái vận hành, 3 loại ô, toạ độ trên sơ đồ và kích thước.';
+COMMENT ON COLUMN parking_slot.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN parking_slot.zone_id IS 'Khu chứa ô đỗ (FK → parking_zone).';
+COMMENT ON COLUMN parking_slot.code IS 'Mã ô trong khu (A-01, A10...); duy nhất trong khu.';
+COMMENT ON COLUMN parking_slot.slot_kind IS 'Loại ô: STANDARD, PRIORITY hoặc EV_CHARGING.';
+COMMENT ON COLUMN parking_slot.status IS 'Trạng thái: AVAILABLE, OCCUPIED, RESERVED, CHARGING hoặc MAINTENANCE.';
+COMMENT ON COLUMN parking_slot.map_row IS 'Hàng trên lưới sơ đồ (bắt đầu từ 1).';
+COMMENT ON COLUMN parking_slot.map_col IS 'Cột trên lưới sơ đồ (bắt đầu từ 1); cặp (row, col) duy nhất trong khu.';
+COMMENT ON COLUMN parking_slot.width IS 'Chiều rộng ô, mét (> 0, mặc định 2,50).';
+COMMENT ON COLUMN parking_slot.length IS 'Chiều dài ô, mét (> 0, mặc định 5,00).';
+COMMENT ON COLUMN parking_slot.height IS 'Chiều cao thông thuỷ, mét (> 0, mặc định 2,20).';
+COMMENT ON COLUMN parking_slot.notes IS 'Ghi chú tự do (tuỳ chọn).';
+COMMENT ON COLUMN parking_slot.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN parking_slot.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN parking_slot.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN parking_slot.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN parking_slot.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 4.5. Table: slot_allowed_vehicle_type
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` ("Loại xe: Ô tô 4-7 chỗ"), TL-03, TL-15
+-- 4.5. Bảng: slot_allowed_vehicle_type
 -- -----------------------------------------------------------------------------
 CREATE TABLE slot_allowed_vehicle_type (
     slot_id BIGINT NOT NULL,
@@ -1062,15 +1029,13 @@ CREATE TABLE slot_allowed_vehicle_type (
 
 CREATE INDEX idx_savt_vehicle_type_id ON slot_allowed_vehicle_type (vehicle_type_id);
 
-COMMENT ON TABLE slot_allowed_vehicle_type IS 'Many-to-many junction specifying permitted vehicle_type categories per parking_slot (TL-03, TL-15, SRS 4.8.2).';
-COMMENT ON COLUMN slot_allowed_vehicle_type.slot_id IS 'Foreign key referencing parking_slot.';
-COMMENT ON COLUMN slot_allowed_vehicle_type.vehicle_type_id IS 'Foreign key referencing allowed vehicle_type.';
-COMMENT ON COLUMN slot_allowed_vehicle_type.created_at IS 'Association creation timestamp.';
+COMMENT ON TABLE slot_allowed_vehicle_type IS 'Bảng nối nhiều-nhiều cho biết mỗi ô cho phép loại xe nào. Là điều kiện kiểm tra khi cấp vé, đặt chỗ và cho xe vào.';
+COMMENT ON COLUMN slot_allowed_vehicle_type.slot_id IS 'Ô đỗ (FK → parking_slot).';
+COMMENT ON COLUMN slot_allowed_vehicle_type.vehicle_type_id IS 'Loại xe được phép đỗ (FK → vehicle_type).';
+COMMENT ON COLUMN slot_allowed_vehicle_type.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
 
 -- -----------------------------------------------------------------------------
--- 4.6. Table: slot_reservation
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` ("ĐÃ ĐẶT 13:30", "Người đặt trước",
---         "Đặt trước ô A-04 cho xe 30E-456.78 lúc 13:30"), TL-04, TL-15
+-- 4.6. Bảng: slot_reservation
 -- -----------------------------------------------------------------------------
 CREATE TABLE slot_reservation (
     id BIGSERIAL,
@@ -1181,43 +1146,40 @@ CREATE INDEX idx_slot_reservation_vehicle_id ON slot_reservation (vehicle_id) WH
 CREATE INDEX idx_slot_reservation_cancelled_by ON slot_reservation (cancelled_by) WHERE deleted_at IS NULL;
 CREATE INDEX idx_slot_reservation_hold_expires ON slot_reservation (hold_expires_at) WHERE deleted_at IS NULL AND status = 'PENDING_PAYMENT';
 
-COMMENT ON TABLE slot_reservation IS 'Advance parking slot reservations with multi-state GiST anti-overlap and vehicle anti-double-booking exclusions (R1.1, R1.2, TL-04, OQ-88).';
-COMMENT ON COLUMN slot_reservation.id IS 'Primary key identifier of the slot reservation.';
-COMMENT ON COLUMN slot_reservation.code IS 'Unique reservation reference code among active records.';
-COMMENT ON COLUMN slot_reservation.slot_id IS 'Foreign key referencing the reserved parking_slot.';
-COMMENT ON COLUMN slot_reservation.customer_id IS 'Optional foreign key referencing a registered customer.';
-COMMENT ON COLUMN slot_reservation.vehicle_id IS 'Optional foreign key referencing a registered vehicle.';
-COMMENT ON COLUMN slot_reservation.booking_channel IS 'Booking origination channel: CUSTOMER_PORTAL or STAFF (R1.2).';
-COMMENT ON COLUMN slot_reservation.reserved_name IS 'Display name of the reserver when booked for a walk-in/visitor ("Người đặt trước", TL-04).';
-COMMENT ON COLUMN slot_reservation.reserved_phone IS 'Contact phone number of the reserver.';
-COMMENT ON COLUMN slot_reservation.reserved_from IS 'Reservation start timestamp (inclusive lower bound).';
-COMMENT ON COLUMN slot_reservation.reserved_until IS 'Reservation end timestamp (exclusive upper bound, must be > reserved_from).';
-COMMENT ON COLUMN slot_reservation.status IS 'Reservation lifecycle status: PENDING_PAYMENT, CONFIRMED, CHECKED_IN, COMPLETED, CANCELLED, EXPIRED, or NO_SHOW (R1.1, OQ-88).';
-COMMENT ON COLUMN slot_reservation.hold_expires_at IS 'Expiration deadline for settling booking deposit while in PENDING_PAYMENT.';
-COMMENT ON COLUMN slot_reservation.deposit_amount IS 'Booking deposit amount in VND (NUMERIC(12,2), default 0.00).';
-COMMENT ON COLUMN slot_reservation.checked_in_at IS 'Timestamp when the reserver vehicle checked in at the entry barrier.';
-COMMENT ON COLUMN slot_reservation.completed_at IS 'Timestamp when the parking session exited, completing the reservation.';
-COMMENT ON COLUMN slot_reservation.cancelled_at IS 'Timestamp when the reservation was cancelled.';
-COMMENT ON COLUMN slot_reservation.cancelled_by IS 'Foreign key referencing the account that cancelled the reservation.';
-COMMENT ON COLUMN slot_reservation.cancel_reason IS 'Reason or note explaining why the reservation was cancelled.';
-COMMENT ON COLUMN slot_reservation.no_show_at IS 'Timestamp when the reservation was marked NO_SHOW after grace expiration.';
-COMMENT ON COLUMN slot_reservation.notes IS 'Optional reservation notes.';
-COMMENT ON COLUMN slot_reservation.created_by IS 'Optional foreign key referencing the employee who created the reservation.';
-COMMENT ON COLUMN slot_reservation.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN slot_reservation.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN slot_reservation.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN slot_reservation.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN slot_reservation.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE slot_reservation IS 'Lưu lượt đặt trước một ô đỗ trong khung giờ, với vòng đời 7 trạng thái và hai ràng buộc EXCLUDE chống đặt trùng ô và trùng xe. Là bảng trung tâm của mô-đun đặt chỗ.';
+COMMENT ON COLUMN slot_reservation.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN slot_reservation.code IS 'Mã đặt chỗ dạng RSV-YYYYMMDD-XXXXXX; duy nhất trong bản ghi chưa xoá.';
+COMMENT ON COLUMN slot_reservation.slot_id IS 'Ô đỗ được đặt (FK → parking_slot).';
+COMMENT ON COLUMN slot_reservation.customer_id IS 'Khách hàng đặt (NULL với khách vãng lai do nhân viên đặt hộ).';
+COMMENT ON COLUMN slot_reservation.vehicle_id IS 'Xe đặt (NULL với khách vãng lai).';
+COMMENT ON COLUMN slot_reservation.booking_channel IS 'Kênh đặt: CUSTOMER_PORTAL hoặc STAFF.';
+COMMENT ON COLUMN slot_reservation.reserved_name IS 'Tên người đặt khi đặt cho khách vãng lai.';
+COMMENT ON COLUMN slot_reservation.reserved_phone IS 'Số điện thoại người đặt (9-15 chữ số).';
+COMMENT ON COLUMN slot_reservation.reserved_from IS 'Bắt đầu giữ chỗ (bao gồm).';
+COMMENT ON COLUMN slot_reservation.reserved_until IS 'Kết thúc giữ chỗ (không bao gồm), phải sau reserved_from.';
+COMMENT ON COLUMN slot_reservation.status IS 'Trạng thái: PENDING_PAYMENT, CONFIRMED, CHECKED_IN, COMPLETED, CANCELLED, EXPIRED, NO_SHOW.';
+COMMENT ON COLUMN slot_reservation.hold_expires_at IS 'Hạn thanh toán cọc; bắt buộc khi PENDING_PAYMENT.';
+COMMENT ON COLUMN slot_reservation.deposit_amount IS 'Tiền cọc, VND (chụp từ chính sách lúc đặt).';
+COMMENT ON COLUMN slot_reservation.checked_in_at IS 'Thời điểm xe vào cổng; bắt buộc khi CHECKED_IN.';
+COMMENT ON COLUMN slot_reservation.completed_at IS 'Thời điểm xe ra, hoàn tất; bắt buộc khi COMPLETED.';
+COMMENT ON COLUMN slot_reservation.cancelled_at IS 'Thời điểm huỷ; bắt buộc khi CANCELLED.';
+COMMENT ON COLUMN slot_reservation.cancelled_by IS 'Tài khoản huỷ (FK → account).';
+COMMENT ON COLUMN slot_reservation.cancel_reason IS 'Lý do huỷ.';
+COMMENT ON COLUMN slot_reservation.no_show_at IS 'Thời điểm đánh dấu NO_SHOW; bắt buộc khi NO_SHOW.';
+COMMENT ON COLUMN slot_reservation.notes IS 'Ghi chú.';
+COMMENT ON COLUMN slot_reservation.created_by IS 'Nhân viên tạo (FK → employee), dùng cho kênh STAFF.';
+COMMENT ON COLUMN slot_reservation.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN slot_reservation.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN slot_reservation.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN slot_reservation.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN slot_reservation.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- =============================================================================
--- SECTION 5: TICKETING & RENEWAL MODULE (TL-10, TL-15, SRS 4.6)
+-- PHẦN 5: VÉ VÀ GIA HẠN
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 5.1. Table: ticket
--- Source: Frontend `Quản lý vé — Smart Mobility.png` (main list & 3 dialogs:
---         "Thêm vé mới", "Gia hạn vé", "Chi tiết vé"; statuses ACTIVE, EXPIRED,
---         CANCELLED, RENEWING; "Sắp hết hạn" is derived from dates; "Ghi chú"), TL-10, TL-15
+-- 5.1. Bảng: ticket
 -- -----------------------------------------------------------------------------
 CREATE TABLE ticket (
     id BIGSERIAL,
@@ -1280,29 +1242,27 @@ CREATE INDEX idx_ticket_ticket_type_id ON ticket (ticket_type_id) WHERE deleted_
 CREATE INDEX idx_ticket_status_effective ON ticket (status, effective_to) WHERE deleted_at IS NULL;
 CREATE INDEX idx_ticket_stat_active ON ticket (created_at) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE ticket IS 'Issued parking tickets with GiST non-overlapping slot exclusion, composite vehicle-customer ownership FK, notes, and statuses ACTIVE, EXPIRED, CANCELLED, RENEWING ("Sắp hết hạn" is derived from effective_to; Quản lý vé — Smart Mobility.png, TL-10, TL-15).';
-COMMENT ON COLUMN ticket.id IS 'Primary key identifier of the ticket.';
-COMMENT ON COLUMN ticket.code IS 'Unique ticket business code ("Mã vé", e.g., VT0001..VT0006).';
-COMMENT ON COLUMN ticket.vehicle_id IS 'Foreign key referencing registered vehicle (part of composite FK with customer_id per OQ-61).';
-COMMENT ON COLUMN ticket.customer_id IS 'Foreign key referencing ticket owner customer.';
-COMMENT ON COLUMN ticket.slot_id IS 'Foreign key referencing assigned physical parking_slot.';
-COMMENT ON COLUMN ticket.ticket_type_id IS 'Foreign key referencing tariff ticket_type.';
-COMMENT ON COLUMN ticket.issued_by IS 'Optional foreign key referencing the employee who issued the ticket.';
-COMMENT ON COLUMN ticket.price IS 'Billed ticket price in VND ("Giá vé (VNĐ)").';
-COMMENT ON COLUMN ticket.effective_from IS 'Ticket validity start timestamp ("Ngày bắt đầu").';
-COMMENT ON COLUMN ticket.effective_to IS 'Ticket validity end timestamp ("Ngày kết thúc", must be > effective_from).';
-COMMENT ON COLUMN ticket.status IS 'Stored ticket lifecycle status: ACTIVE (Đang hiệu lực), EXPIRED (Hết hạn), CANCELLED (Đã hủy), or RENEWING (Đang gia hạn); "Sắp hết hạn" is derived from effective_to (TL-10).';
-COMMENT ON COLUMN ticket.notes IS 'Optional ticket notes ("Ghi chú" on Thêm vé mới and Chi tiết vé dialogs, TL-10).';
-COMMENT ON COLUMN ticket.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN ticket.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN ticket.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN ticket.deleted_at IS 'Soft deletion timestamp; permitted only after expiration (ck_ticket_delete_only_expired, OQ-64).';
-COMMENT ON COLUMN ticket.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE ticket IS 'Lưu vé đã phát hành gắn một xe, một khách và một ô cố định trong khoảng hiệu lực. EXCLUDE chống hai vé chồng hiệu lực trên một ô; trạng thái hết hạn được tự cập nhật.';
+COMMENT ON COLUMN ticket.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN ticket.code IS 'Mã vé (VT0001...); duy nhất trong vé chưa xoá.';
+COMMENT ON COLUMN ticket.vehicle_id IS 'Xe được cấp vé; cùng customer_id tạo khoá ngoại ghép bảo đảm xe thuộc đúng chủ vé.';
+COMMENT ON COLUMN ticket.customer_id IS 'Chủ vé (FK → customer).';
+COMMENT ON COLUMN ticket.slot_id IS 'Ô đỗ cố định gắn với vé.';
+COMMENT ON COLUMN ticket.ticket_type_id IS 'Loại vé (FK → ticket_type).';
+COMMENT ON COLUMN ticket.issued_by IS 'Nhân viên phát hành (FK → employee).';
+COMMENT ON COLUMN ticket.price IS 'Giá vé thực thu, VND (≥ 0).';
+COMMENT ON COLUMN ticket.effective_from IS 'Bắt đầu hiệu lực.';
+COMMENT ON COLUMN ticket.effective_to IS 'Hết hiệu lực, phải sau effective_from.';
+COMMENT ON COLUMN ticket.status IS 'Trạng thái lưu: ACTIVE, EXPIRED, CANCELLED, RENEWING ("sắp hết hạn" suy ra từ effective_to).';
+COMMENT ON COLUMN ticket.notes IS 'Ghi chú.';
+COMMENT ON COLUMN ticket.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN ticket.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN ticket.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN ticket.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN ticket.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 5.2. Table: ticket_renewal
--- Source: Frontend `Quản lý vé — Smart Mobility.png` (Dialog 2 "Gia hạn vé" & Dialog 3
---         "Lịch sử gia hạn", including "Ghi chú gia hạn"), TL-10, TL-15, OQ-58
+-- 5.2. Bảng: ticket_renewal
 -- -----------------------------------------------------------------------------
 CREATE TABLE ticket_renewal (
     id BIGSERIAL,
@@ -1345,31 +1305,29 @@ CREATE TABLE ticket_renewal (
 CREATE INDEX idx_ticket_renewal_ticket_id ON ticket_renewal (ticket_id);
 CREATE INDEX idx_ticket_renewal_created_at ON ticket_renewal (created_at);
 
-COMMENT ON TABLE ticket_renewal IS 'Immutable financial and operational audit trail of ticket renewals ("Gia hạn vé" & "Lịch sử gia hạn" on Quản lý vé — Smart Mobility.png, TL-10, TL-15, OQ-58).';
-COMMENT ON COLUMN ticket_renewal.id IS 'Primary key identifier of the renewal record.';
-COMMENT ON COLUMN ticket_renewal.ticket_id IS 'Foreign key referencing the renewed ticket.';
-COMMENT ON COLUMN ticket_renewal.old_slot_id IS 'Foreign key referencing parking_slot prior to renewal.';
-COMMENT ON COLUMN ticket_renewal.new_slot_id IS 'Foreign key referencing parking_slot after renewal ("Đổi vị trí đỗ (tùy chọn)").';
-COMMENT ON COLUMN ticket_renewal.old_ticket_type_id IS 'Foreign key referencing ticket_type prior to renewal (OQ-58).';
-COMMENT ON COLUMN ticket_renewal.new_ticket_type_id IS 'Foreign key referencing newly selected ticket_type ("Loại vé gia hạn", OQ-58).';
-COMMENT ON COLUMN ticket_renewal.old_price IS 'Ticket price prior to renewal (OQ-58).';
-COMMENT ON COLUMN ticket_renewal.new_price IS 'New ticket tariff price upon renewal (OQ-58).';
-COMMENT ON COLUMN ticket_renewal.old_effective_to IS 'Previous expiration timestamp before renewal ("Hạn hiện tại").';
-COMMENT ON COLUMN ticket_renewal.new_effective_to IS 'Extended expiration timestamp after renewal ("Ngày kết thúc mới").';
-COMMENT ON COLUMN ticket_renewal.additional_price IS 'Renewal fee charged for the extension ("Giá gia hạn").';
-COMMENT ON COLUMN ticket_renewal.notes IS 'Optional renewal note ("Ghi chú gia hạn" on Dialog 2 Gia hạn vé, TL-10).';
-COMMENT ON COLUMN ticket_renewal.renewed_by IS 'Optional foreign key referencing the employee who processed the renewal.';
-COMMENT ON COLUMN ticket_renewal.created_at IS 'Timestamp when the renewal transaction occurred.';
-COMMENT ON COLUMN ticket_renewal.row_version IS 'Concurrency version counter.';
+COMMENT ON TABLE ticket_renewal IS 'Nhật ký các lần gia hạn vé: ô, loại vé, giá và hạn trước/sau, phí thu thêm.';
+COMMENT ON COLUMN ticket_renewal.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN ticket_renewal.ticket_id IS 'Vé được gia hạn.';
+COMMENT ON COLUMN ticket_renewal.old_slot_id IS 'Ô đỗ trước gia hạn.';
+COMMENT ON COLUMN ticket_renewal.new_slot_id IS 'Ô đỗ sau gia hạn (có thể đổi ô).';
+COMMENT ON COLUMN ticket_renewal.old_ticket_type_id IS 'Loại vé trước gia hạn.';
+COMMENT ON COLUMN ticket_renewal.new_ticket_type_id IS 'Loại vé sau gia hạn.';
+COMMENT ON COLUMN ticket_renewal.old_price IS 'Giá vé trước gia hạn.';
+COMMENT ON COLUMN ticket_renewal.new_price IS 'Giá vé mới.';
+COMMENT ON COLUMN ticket_renewal.old_effective_to IS 'Hạn cũ.';
+COMMENT ON COLUMN ticket_renewal.new_effective_to IS 'Hạn mới, phải sau hạn cũ.';
+COMMENT ON COLUMN ticket_renewal.additional_price IS 'Phí gia hạn thu thêm, VND (≥ 0).';
+COMMENT ON COLUMN ticket_renewal.notes IS 'Ghi chú gia hạn.';
+COMMENT ON COLUMN ticket_renewal.renewed_by IS 'Nhân viên xử lý gia hạn (FK → employee).';
+COMMENT ON COLUMN ticket_renewal.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN ticket_renewal.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
 
 -- =============================================================================
--- SECTION 6: GATES, ENTRY/EXIT SESSIONS & PAYMENTS (TL-05, TL-06, TL-07, TL-15)
+-- PHẦN 6: CỔNG, PHIÊN RA/VÀO VÀ THANH TOÁN
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 6.1. Table: parking_gate
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("4 Cổng quét tự động",
---         "Cổng vào 1", "Cổng vào 2", "Cổng ra 1", "Cổng ra 2", "Camera cổng ra 1"), TL-06
+-- 6.1. Bảng: parking_gate
 -- -----------------------------------------------------------------------------
 CREATE TABLE parking_gate (
     id BIGSERIAL,
@@ -1410,26 +1368,23 @@ CREATE UNIQUE INDEX uq_parking_gate_lot_name_active
     ON parking_gate (lot_id, name)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE parking_gate IS 'Entry and exit barrier gates with camera health and AI auto-scan status ("4 Cổng quét tự động", "Cổng vào 1", "Camera cổng ra 1" on Trang chủ, TL-06).';
-COMMENT ON COLUMN parking_gate.id IS 'Primary key identifier of the parking gate.';
-COMMENT ON COLUMN parking_gate.lot_id IS 'Foreign key referencing parent parking_lot.';
-COMMENT ON COLUMN parking_gate.code IS 'Unique gate code within the parking lot (e.g., IN_01, OUT_01).';
-COMMENT ON COLUMN parking_gate.name IS 'Display name of the gate (e.g., Cổng vào 1, Cổng ra 1; TL-06).';
-COMMENT ON COLUMN parking_gate.direction IS 'Gate traffic direction: IN (entry) or OUT (exit) (TL-06).';
-COMMENT ON COLUMN parking_gate.camera_status IS 'Operational health of the gate ALPR camera: ONLINE, LOW_LIGHT, DEGRADED, or OFFLINE (TL-06, OQ-81).';
-COMMENT ON COLUMN parking_gate.is_auto_scan IS 'Whether automatic AI license plate scanning is enabled on this gate ("4 Cổng quét tự động", TL-06).';
-COMMENT ON COLUMN parking_gate.is_active IS 'Whether the gate is currently active in operation.';
-COMMENT ON COLUMN parking_gate.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN parking_gate.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN parking_gate.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN parking_gate.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN parking_gate.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE parking_gate IS 'Lưu cổng vào/ra kèm hướng, tình trạng camera biển số và cờ quét tự động.';
+COMMENT ON COLUMN parking_gate.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN parking_gate.lot_id IS 'Bãi đỗ chứa cổng (FK → parking_lot).';
+COMMENT ON COLUMN parking_gate.code IS 'Mã cổng (IN_01, OUT_01); duy nhất trong bãi.';
+COMMENT ON COLUMN parking_gate.name IS 'Tên hiển thị (Cổng vào 1...); duy nhất trong bãi.';
+COMMENT ON COLUMN parking_gate.direction IS 'Hướng: IN (vào) hoặc OUT (ra).';
+COMMENT ON COLUMN parking_gate.camera_status IS 'Tình trạng camera biển số: ONLINE, LOW_LIGHT, DEGRADED hoặc OFFLINE.';
+COMMENT ON COLUMN parking_gate.is_auto_scan IS 'Bật nhận diện biển số tự động tại cổng.';
+COMMENT ON COLUMN parking_gate.is_active IS 'Cổng đang hoạt động.';
+COMMENT ON COLUMN parking_gate.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN parking_gate.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN parking_gate.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN parking_gate.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN parking_gate.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 6.2. Table: vehicle_entry_exit_log
--- Source: Frontend `Lịch sử ra/vào — Smart Mobility.png` ("Mã phiên đỗ xe", "Cước phí",
---         "Hình ảnh đối soát") & `Trang chủ — Smart Mobility.png` ("Xem ảnh (99%)",
---         "Ảnh khớp", "Cần duyệt", "Nhập thủ công: 1.6%"), TL-05, TL-15
+-- 6.2. Bảng: vehicle_entry_exit_log
 -- -----------------------------------------------------------------------------
 CREATE TABLE vehicle_entry_exit_log (
     id BIGSERIAL,
@@ -1519,36 +1474,33 @@ CREATE INDEX idx_log_review_status ON vehicle_entry_exit_log (review_status, ent
 CREATE INDEX idx_log_license_plate_trgm ON vehicle_entry_exit_log USING gin (license_plate_norm gin_trgm_ops);
 CREATE INDEX idx_log_session_code_trgm ON vehicle_entry_exit_log USING gin (session_code gin_trgm_ops);
 
-COMMENT ON TABLE vehicle_entry_exit_log IS 'Barrier entry/exit parking sessions supporting both registered vehicles and unregistered visitors (vehicle_id NULL), with session_code, entry/exit gates, AI confidence, recognition source, review status, and fee amount (Lịch sử ra/vào & Trang chủ, TL-05, TL-15).';
-COMMENT ON COLUMN vehicle_entry_exit_log.id IS 'Primary key identifier of the parking session log.';
-COMMENT ON COLUMN vehicle_entry_exit_log.session_code IS 'Unique parking session code ("Mã phiên đỗ xe", e.g., #PK-20260414-01; TL-05).';
-COMMENT ON COLUMN vehicle_entry_exit_log.vehicle_id IS 'Optional foreign key referencing registered vehicle; NULL for unregistered visitor vehicles (TL-05).';
-COMMENT ON COLUMN vehicle_entry_exit_log.slot_id IS 'Optional foreign key referencing occupied physical parking_slot.';
-COMMENT ON COLUMN vehicle_entry_exit_log.ticket_id IS 'Optional foreign key referencing subscription ticket applied to the session.';
-COMMENT ON COLUMN vehicle_entry_exit_log.reservation_id IS 'Optional foreign key referencing advance slot_reservation fulfilled by this session (R1.5).';
-COMMENT ON COLUMN vehicle_entry_exit_log.entry_gate_id IS 'Optional foreign key referencing entry parking_gate ("Cổng vào 1/2", TL-05, TL-06).';
-COMMENT ON COLUMN vehicle_entry_exit_log.exit_gate_id IS 'Optional foreign key referencing exit parking_gate ("Cổng ra 1/2", TL-05, TL-06).';
-COMMENT ON COLUMN vehicle_entry_exit_log.license_plate IS 'Raw license plate captured or entered at barrier gate.';
-COMMENT ON COLUMN vehicle_entry_exit_log.license_plate_norm IS 'Canonical normalized license plate computed via fn_normalize_license_plate(license_plate) (TL-05, TL-15, OQ-75).';
-COMMENT ON COLUMN vehicle_entry_exit_log.ai_confidence IS 'ALPR recognition confidence percentage 0..100 ("Xem ảnh (99%)", "84%", TL-05).';
-COMMENT ON COLUMN vehicle_entry_exit_log.recognition_source IS 'Plate capture source: AI (automatic camera OCR) or MANUAL ("Nhập thủ công", TL-05).';
-COMMENT ON COLUMN vehicle_entry_exit_log.review_status IS 'Verification status: AUTO, MATCHED ("Ảnh khớp"), NEEDS_REVIEW ("Cần duyệt"), APPROVED, or REJECTED (TL-05, OQ-81).';
-COMMENT ON COLUMN vehicle_entry_exit_log.fee_amount IS 'Session parking fee in VND ("Cước phí" / "Cước phí tạm tính", TL-05, TL-07, OQ-80).';
-COMMENT ON COLUMN vehicle_entry_exit_log.entry_time IS 'Check-in timestamp when vehicle entered the parking lot ("Thời gian vào").';
-COMMENT ON COLUMN vehicle_entry_exit_log.exit_time IS 'Check-out timestamp when vehicle exited the parking lot ("Thời gian ra"); NULL while parked.';
-COMMENT ON COLUMN vehicle_entry_exit_log.entry_image_url IS 'Check-in comparison camera snapshot URI ("Ảnh lúc vào" under Hình ảnh đối soát, TL-05, OQ-60).';
-COMMENT ON COLUMN vehicle_entry_exit_log.exit_image_url IS 'Check-out comparison camera snapshot URI ("Ảnh lúc ra" under Hình ảnh đối soát, TL-05, OQ-60).';
-COMMENT ON COLUMN vehicle_entry_exit_log.entry_handled_by IS 'Optional foreign key referencing employee on duty at entry.';
-COMMENT ON COLUMN vehicle_entry_exit_log.exit_handled_by IS 'Optional foreign key referencing employee on duty at exit.';
-COMMENT ON COLUMN vehicle_entry_exit_log.notes IS 'Optional operator notes for the session.';
-COMMENT ON COLUMN vehicle_entry_exit_log.row_version IS 'Concurrency version counter.';
-COMMENT ON COLUMN vehicle_entry_exit_log.created_at IS 'Log record creation timestamp.';
+COMMENT ON TABLE vehicle_entry_exit_log IS 'Lưu phiên đỗ xe qua cổng, gồm cả xe đã đăng ký và khách vãng lai (vehicle_id NULL). Lưu biển số, độ tin cậy nhận diện, nguồn nhận diện, ảnh đối soát và cước phí.';
+COMMENT ON COLUMN vehicle_entry_exit_log.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN vehicle_entry_exit_log.session_code IS 'Mã phiên đỗ (#PK-20261017-001); duy nhất.';
+COMMENT ON COLUMN vehicle_entry_exit_log.vehicle_id IS 'Xe đã đăng ký; NULL với khách vãng lai.';
+COMMENT ON COLUMN vehicle_entry_exit_log.slot_id IS 'Ô đỗ đang chiếm (tuỳ chọn).';
+COMMENT ON COLUMN vehicle_entry_exit_log.ticket_id IS 'Vé áp dụng cho phiên (tuỳ chọn).';
+COMMENT ON COLUMN vehicle_entry_exit_log.reservation_id IS 'Lượt đặt trước mà phiên này hoàn thành; mỗi lượt đặt chỉ gắn tối đa một phiên.';
+COMMENT ON COLUMN vehicle_entry_exit_log.entry_gate_id IS 'Cổng vào.';
+COMMENT ON COLUMN vehicle_entry_exit_log.exit_gate_id IS 'Cổng ra.';
+COMMENT ON COLUMN vehicle_entry_exit_log.license_plate IS 'Biển số chụp/nhập tại cổng.';
+COMMENT ON COLUMN vehicle_entry_exit_log.license_plate_norm IS 'Biển số chuẩn hoá, cột generated lưu trữ; chỉ một phiên mở cho mỗi biển.';
+COMMENT ON COLUMN vehicle_entry_exit_log.ai_confidence IS 'Độ tin cậy nhận diện biển số 0-100 (%).';
+COMMENT ON COLUMN vehicle_entry_exit_log.recognition_source IS 'Nguồn: AI hoặc MANUAL.';
+COMMENT ON COLUMN vehicle_entry_exit_log.review_status IS 'Duyệt: AUTO, MATCHED, NEEDS_REVIEW, APPROVED, REJECTED.';
+COMMENT ON COLUMN vehicle_entry_exit_log.fee_amount IS 'Cước phí phiên, VND (≥ 0).';
+COMMENT ON COLUMN vehicle_entry_exit_log.entry_time IS 'Thời gian vào.';
+COMMENT ON COLUMN vehicle_entry_exit_log.exit_time IS 'Thời gian ra; NULL khi xe còn trong bãi (không được trước entry_time).';
+COMMENT ON COLUMN vehicle_entry_exit_log.entry_image_url IS 'Ảnh đối soát lúc vào.';
+COMMENT ON COLUMN vehicle_entry_exit_log.exit_image_url IS 'Ảnh đối soát lúc ra.';
+COMMENT ON COLUMN vehicle_entry_exit_log.entry_handled_by IS 'Nhân viên trực lúc vào.';
+COMMENT ON COLUMN vehicle_entry_exit_log.exit_handled_by IS 'Nhân viên trực lúc ra.';
+COMMENT ON COLUMN vehicle_entry_exit_log.notes IS 'Ghi chú của người vận hành.';
+COMMENT ON COLUMN vehicle_entry_exit_log.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN vehicle_entry_exit_log.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
 
 -- -----------------------------------------------------------------------------
--- 6.3. Table: payment
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Doanh thu hôm nay",
---         "Tiền mặt: 18% | QR: 82%"), `Main Page.png` ("VietQR"), `Quản lý vé`
---         ("Giá vé", "Giá gia hạn"), `Lịch sử ra/vào` ("Cước phí"), TL-07
+-- 6.3. Bảng: payment
 -- -----------------------------------------------------------------------------
 CREATE TABLE payment (
     id BIGSERIAL,
@@ -1611,33 +1563,32 @@ CREATE INDEX idx_payment_reservation_id ON payment (reservation_id) WHERE delete
 CREATE INDEX idx_payment_paid_at_method ON payment (paid_at, method) WHERE deleted_at IS NULL AND status = 'PAID';
 CREATE INDEX idx_payment_revenue_today ON payment ((COALESCE(paid_at, created_at))) WHERE deleted_at IS NULL AND status = 'PAID';
 
-COMMENT ON TABLE payment IS 'Unified financial payment transactions supporting CASH and VIETQR methods and targeting exactly one session, ticket, renewal, or reservation (Trang chủ, Main Page, Quản lý vé, Lịch sử ra/vào, TL-07, R1.4).';
-COMMENT ON COLUMN payment.id IS 'Primary key identifier of the payment record.';
-COMMENT ON COLUMN payment.code IS 'Unique payment transaction code among active records.';
-COMMENT ON COLUMN payment.amount IS 'Payment amount in VND (NUMERIC(12,2), must be >= 0).';
-COMMENT ON COLUMN payment.method IS 'Payment method: CASH ("Tiền mặt") or VIETQR ("QR" / "VietQR") (TL-07).';
-COMMENT ON COLUMN payment.status IS 'Payment lifecycle status: UNPAID, PAID, CANCELLED, or REFUNDED (TL-07, OQ-81).';
-COMMENT ON COLUMN payment.paid_at IS 'Timestamp when payment was settled; NULL while UNPAID.';
-COMMENT ON COLUMN payment.received_by IS 'Optional foreign key referencing cashier/operator employee.';
-COMMENT ON COLUMN payment.provider_ref IS 'Optional external payment reference or VietQR transfer narrative (TL-07, OQ-82).';
-COMMENT ON COLUMN payment.session_id IS 'Optional foreign key referencing vehicle_entry_exit_log (exactly one target must be non-null per ck_payment_single_target).';
-COMMENT ON COLUMN payment.ticket_id IS 'Optional foreign key referencing ticket (initial ticket purchase target).';
-COMMENT ON COLUMN payment.renewal_id IS 'Optional foreign key referencing ticket_renewal (ticket renewal target).';
-COMMENT ON COLUMN payment.reservation_id IS 'Optional foreign key referencing slot_reservation (advance deposit target, R1.4).';
-COMMENT ON COLUMN payment.notes IS 'Optional payment notes.';
-COMMENT ON COLUMN payment.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN payment.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN payment.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN payment.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN payment.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE payment IS 'Sổ chứng từ thanh toán thống nhất cho tiền mặt và VietQR. Mỗi chứng từ nhắm đúng một mục tiêu: phiên đỗ, vé, gia hạn hoặc tiền cọc đặt chỗ.';
+COMMENT ON COLUMN payment.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN payment.code IS 'Mã chứng từ thanh toán; duy nhất trong bản ghi chưa xoá.';
+COMMENT ON COLUMN payment.amount IS 'Số tiền, VND (≥ 0).';
+COMMENT ON COLUMN payment.method IS 'Phương thức: CASH hoặc VIETQR.';
+COMMENT ON COLUMN payment.status IS 'Trạng thái: UNPAID, PAID, CANCELLED hoặc REFUNDED.';
+COMMENT ON COLUMN payment.paid_at IS 'Thời điểm thanh toán; bắt buộc khi PAID hoặc REFUNDED.';
+COMMENT ON COLUMN payment.received_by IS 'Nhân viên thu tiền (FK → employee, tuỳ chọn).';
+COMMENT ON COLUMN payment.provider_ref IS 'Mã tham chiếu bên ngoài / nội dung chuyển khoản VietQR (tuỳ chọn).';
+COMMENT ON COLUMN payment.session_id IS 'Mục tiêu thanh toán: phiên ra/vào (đúng một trong bốn cột mục tiêu phải khác NULL).';
+COMMENT ON COLUMN payment.ticket_id IS 'Mục tiêu thanh toán: vé mua mới.';
+COMMENT ON COLUMN payment.renewal_id IS 'Mục tiêu thanh toán: lần gia hạn vé.';
+COMMENT ON COLUMN payment.reservation_id IS 'Mục tiêu thanh toán: tiền cọc đặt trước chỗ.';
+COMMENT ON COLUMN payment.notes IS 'Ghi chú (hệ thống nối thêm lý do hoàn/tịch thu cọc).';
+COMMENT ON COLUMN payment.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN payment.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN payment.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN payment.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN payment.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- =============================================================================
--- SECTION 7: ACTIVITY FEED, ALERTS, NEWS & NOTIFICATIONS (TL-12, TL-13, TL-15)
+-- PHẦN 7: NHẬT KÝ HOẠT ĐỘNG, CẢNH BÁO, TIN TỨC VÀ THÔNG BÁO
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
--- 7.1. Table: activity_log
--- Source: Frontend `Sơ đồ bãi đậu xe — Smart Mobility.png` ("Hoạt động gần đây"), TL-12
+-- 7.1. Bảng: activity_log
 -- -----------------------------------------------------------------------------
 CREATE TABLE activity_log (
     id BIGSERIAL,
@@ -1658,19 +1609,17 @@ CREATE TABLE activity_log (
 CREATE INDEX idx_activity_log_occurred_at ON activity_log (occurred_at DESC);
 CREATE INDEX idx_activity_log_entity ON activity_log (entity_type, entity_id);
 
-COMMENT ON TABLE activity_log IS 'Append-only operational activity feed ("Hoạt động gần đây" on Sơ đồ bãi đậu xe — Smart Mobility.png, TL-12).';
-COMMENT ON COLUMN activity_log.id IS 'Primary key identifier of the activity log entry.';
-COMMENT ON COLUMN activity_log.actor_account_id IS 'Optional foreign key referencing the account that performed the action (NULL for automated gate/system events).';
-COMMENT ON COLUMN activity_log.action IS 'Action code (e.g., SLOT_CHECKIN, SLOT_RESERVE, SLOT_MAINTENANCE, SLOT_CREATE).';
-COMMENT ON COLUMN activity_log.entity_type IS 'Target domain entity type (e.g., PARKING_SLOT, VEHICLE_SESSION, TICKET).';
-COMMENT ON COLUMN activity_log.entity_id IS 'Optional identifier of the affected domain record.';
-COMMENT ON COLUMN activity_log.message IS 'Human-readable Vietnamese activity description displayed in "Hoạt động gần đây".';
-COMMENT ON COLUMN activity_log.occurred_at IS 'Timestamp when the activity occurred.';
+COMMENT ON TABLE activity_log IS 'Nhật ký hoạt động chỉ ghi thêm cho mục "Hoạt động gần đây", đồng thời là nơi ghi vết SOFT_DELETE, RESTORE, PURGE.';
+COMMENT ON COLUMN activity_log.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN activity_log.actor_account_id IS 'Tài khoản thực hiện (NULL với sự kiện tự động của cổng/hệ thống).';
+COMMENT ON COLUMN activity_log.action IS 'Mã hành động (SOFT_DELETE, RESTORE, PURGE, SLOT_CHECKIN...).';
+COMMENT ON COLUMN activity_log.entity_type IS 'Loại thực thể bị tác động (tên bảng hoặc loại nghiệp vụ).';
+COMMENT ON COLUMN activity_log.entity_id IS 'Khoá của bản ghi bị tác động (có thể NULL).';
+COMMENT ON COLUMN activity_log.message IS 'Mô tả tiếng Việt hiển thị ở mục "Hoạt động gần đây".';
+COMMENT ON COLUMN activity_log.occurred_at IS 'Thời điểm xảy ra hoạt động.';
 
 -- -----------------------------------------------------------------------------
--- 7.2. Table: system_alert
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Cảnh báo bất thường & khẩn cấp":
---         Blacklist plate, Overstay 36h, Low-light camera quality), TL-13
+-- 7.2. Bảng: system_alert
 -- -----------------------------------------------------------------------------
 CREATE TABLE system_alert (
     id BIGSERIAL,
@@ -1702,21 +1651,20 @@ CREATE INDEX idx_system_alert_unresolved
     ON system_alert (occurred_at DESC)
     WHERE resolved_at IS NULL;
 
-COMMENT ON TABLE system_alert IS 'Operational and security anomaly alerts ("Cảnh báo bất thường & khẩn cấp" on Trang chủ — Smart Mobility.png, TL-13).';
-COMMENT ON COLUMN system_alert.id IS 'Primary key identifier of the system alert.';
-COMMENT ON COLUMN system_alert.alert_type IS 'Alert category: BLACKLIST_PLATE, OVERSTAY, CAMERA_QUALITY, or SYSTEM (TL-13, OQ-81).';
-COMMENT ON COLUMN system_alert.severity IS 'Alert severity level: INFO, WARNING, or CRITICAL (TL-13, OQ-81).';
-COMMENT ON COLUMN system_alert.message IS 'Alert message text displayed on the dashboard.';
-COMMENT ON COLUMN system_alert.entity_type IS 'Optional domain entity type associated with the alert (e.g., PLATE_BLACKLIST, VEHICLE_SESSION, PARKING_GATE).';
-COMMENT ON COLUMN system_alert.entity_id IS 'Optional primary key of the associated domain entity.';
-COMMENT ON COLUMN system_alert.occurred_at IS 'Timestamp when the anomaly or alert was triggered.';
-COMMENT ON COLUMN system_alert.resolved_at IS 'Timestamp when the alert was acknowledged/resolved; NULL while unresolved ("cần xử lý").';
-COMMENT ON COLUMN system_alert.resolved_by IS 'Optional foreign key referencing the employee who resolved the alert.';
-COMMENT ON COLUMN system_alert.created_at IS 'Record creation timestamp.';
+COMMENT ON TABLE system_alert IS 'Lưu cảnh báo bất thường và khẩn cấp (biển đen, quá hạn, chất lượng camera, hệ thống).';
+COMMENT ON COLUMN system_alert.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN system_alert.alert_type IS 'Loại: BLACKLIST_PLATE, OVERSTAY, CAMERA_QUALITY hoặc SYSTEM.';
+COMMENT ON COLUMN system_alert.severity IS 'Mức độ: INFO, WARNING hoặc CRITICAL.';
+COMMENT ON COLUMN system_alert.message IS 'Nội dung cảnh báo.';
+COMMENT ON COLUMN system_alert.entity_type IS 'Loại thực thể liên quan (tuỳ chọn).';
+COMMENT ON COLUMN system_alert.entity_id IS 'Khoá thực thể liên quan (tuỳ chọn).';
+COMMENT ON COLUMN system_alert.occurred_at IS 'Thời điểm phát sinh.';
+COMMENT ON COLUMN system_alert.resolved_at IS 'Thời điểm xử lý; NULL nghĩa là còn "cần xử lý".';
+COMMENT ON COLUMN system_alert.resolved_by IS 'Nhân viên xử lý (FK → employee).';
+COMMENT ON COLUMN system_alert.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
 
 -- -----------------------------------------------------------------------------
--- 7.3. Table: news
--- Source: Sprint Plan `Tasks_Sprint_1` (SCO-03), OQ-51, TL-15
+-- 7.3. Bảng: news
 -- -----------------------------------------------------------------------------
 CREATE TABLE news (
     id BIGSERIAL,
@@ -1759,26 +1707,25 @@ CREATE INDEX idx_news_published
 
 CREATE INDEX idx_news_author_id ON news (author_id) WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE news IS 'Parking facility news and announcements article table (SCO-03, OQ-51, TL-15).';
-COMMENT ON COLUMN news.id IS 'Primary key identifier of the news article.';
-COMMENT ON COLUMN news.title IS 'Headline title of the news article.';
-COMMENT ON COLUMN news.slug IS 'URL-safe lowercase slug unique among active articles.';
-COMMENT ON COLUMN news.summary IS 'Optional short summary excerpt.';
-COMMENT ON COLUMN news.content IS 'Full article body content.';
-COMMENT ON COLUMN news.thumbnail_url IS 'Optional cover thumbnail image URL.';
-COMMENT ON COLUMN news.author_id IS 'Foreign key referencing authoring employee.';
-COMMENT ON COLUMN news.is_published IS 'Publication visibility flag.';
-COMMENT ON COLUMN news.published_at IS 'Publication timestamp.';
-COMMENT ON COLUMN news.view_count IS 'Article read counter (must be >= 0).';
-COMMENT ON COLUMN news.row_version IS 'Optimistic concurrency control version counter (TL-15, OQ-64).';
-COMMENT ON COLUMN news.created_at IS 'Record creation timestamp.';
-COMMENT ON COLUMN news.updated_at IS 'Record last update timestamp.';
-COMMENT ON COLUMN news.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN news.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE news IS 'Lưu bài viết tin tức và thông báo của bãi, có slug, trạng thái xuất bản và lượt xem.';
+COMMENT ON COLUMN news.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN news.title IS 'Tiêu đề bài viết.';
+COMMENT ON COLUMN news.slug IS 'Đường dẫn thân thiện (chữ thường, số, gạch ngang); duy nhất trong bài chưa xoá.';
+COMMENT ON COLUMN news.summary IS 'Tóm tắt ngắn (tuỳ chọn, tối đa 500 ký tự).';
+COMMENT ON COLUMN news.content IS 'Nội dung đầy đủ, không rỗng.';
+COMMENT ON COLUMN news.thumbnail_url IS 'Đường dẫn ảnh đại diện (tuỳ chọn).';
+COMMENT ON COLUMN news.author_id IS 'Nhân viên tác giả (FK → employee).';
+COMMENT ON COLUMN news.is_published IS 'Cờ đã xuất bản (mặc định FALSE).';
+COMMENT ON COLUMN news.published_at IS 'Thời điểm xuất bản.';
+COMMENT ON COLUMN news.view_count IS 'Số lượt xem, không âm.';
+COMMENT ON COLUMN news.row_version IS 'Số phiên bản dùng cho khoá lạc quan (luôn ≥ 1, mặc định 1).';
+COMMENT ON COLUMN news.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN news.updated_at IS 'Thời điểm sửa gần nhất.';
+COMMENT ON COLUMN news.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN news.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- -----------------------------------------------------------------------------
--- 7.4. Table: notification
--- Source: SRS 4.2 (`Bảng thông báo`), OQ-51, TL-15
+-- 7.4. Bảng: notification
 -- -----------------------------------------------------------------------------
 CREATE TABLE notification (
     id BIGSERIAL,
@@ -1813,26 +1760,24 @@ CREATE INDEX idx_notification_recipient_unread
     ON notification (recipient_account_id, is_read)
     WHERE deleted_at IS NULL;
 
-COMMENT ON TABLE notification IS 'User and broadcast notification messages table (SRS 4.2, OQ-51, TL-15).';
-COMMENT ON COLUMN notification.id IS 'Primary key identifier of the notification.';
-COMMENT ON COLUMN notification.recipient_account_id IS 'Optional target account; NULL indicates system-wide broadcast.';
-COMMENT ON COLUMN notification.title IS 'Short notification title.';
-COMMENT ON COLUMN notification.content IS 'Notification body content.';
-COMMENT ON COLUMN notification.notification_type IS 'Notification category: SYSTEM, TICKET_EXPIRY, PAYMENT, or SECURITY.';
-COMMENT ON COLUMN notification.is_read IS 'Whether the recipient has read the notification.';
-COMMENT ON COLUMN notification.read_at IS 'Timestamp when the notification was marked read.';
-COMMENT ON COLUMN notification.created_at IS 'Notification creation timestamp.';
-COMMENT ON COLUMN notification.deleted_at IS 'Soft deletion timestamp (ADR-0003).';
-COMMENT ON COLUMN notification.deleted_by IS 'Account that performed soft deletion.';
+COMMENT ON TABLE notification IS 'Lưu thông báo gửi tới một tài khoản hoặc toàn hệ thống (recipient_account_id NULL).';
+COMMENT ON COLUMN notification.id IS 'Khoá chính, tự tăng (sequence).';
+COMMENT ON COLUMN notification.recipient_account_id IS 'Tài khoản nhận; NULL nghĩa là thông báo toàn hệ thống.';
+COMMENT ON COLUMN notification.title IS 'Tiêu đề thông báo.';
+COMMENT ON COLUMN notification.content IS 'Nội dung thông báo.';
+COMMENT ON COLUMN notification.notification_type IS 'Loại: SYSTEM, TICKET_EXPIRY, PAYMENT hoặc SECURITY.';
+COMMENT ON COLUMN notification.is_read IS 'Đã đọc hay chưa.';
+COMMENT ON COLUMN notification.read_at IS 'Thời điểm đọc; có giá trị khi và chỉ khi is_read = TRUE.';
+COMMENT ON COLUMN notification.created_at IS 'Thời điểm tạo bản ghi (TIMESTAMPTZ, mặc định CURRENT_TIMESTAMP).';
+COMMENT ON COLUMN notification.deleted_at IS 'Thời điểm xoá mềm; NULL nghĩa là bản ghi đang hoạt động.';
+COMMENT ON COLUMN notification.deleted_by IS 'Tài khoản thực hiện xoá mềm (FK → account).';
 
 -- =============================================================================
--- SECTION 8: ANALYTICAL & DASHBOARD VIEWS (TL-14, TL-15, TL-27, SRS 4.7)
+-- PHẦN 8: CÁC VIEW THỐNG KÊ
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
 -- 8.1. View: v_slot_occupancy_by_floor
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Tình trạng chỗ đỗ theo khu vực") &
---         `Sơ đồ bãi đậu xe — Smart Mobility.png` (6 KPI cards + floor/zone tabs), TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_slot_occupancy_by_floor AS
 WITH open_sessions AS (
@@ -1922,12 +1867,10 @@ SELECT
 FROM slot_states
 GROUP BY lot_id, lot_code, lot_name, floor_id, floor_code, floor_name, zone_id, zone_code, zone_name;
 
-COMMENT ON VIEW v_slot_occupancy_by_floor IS 'Floor- and zone-level parking slot capacity and real-time occupancy breakdown for Trang chủ and Sơ đồ bãi đậu xe (TL-02, TL-03, TL-14, TL-27, OQ-63).';
+COMMENT ON VIEW v_slot_occupancy_by_floor IS 'Thống kê sức chứa và mức sử dụng ô đỗ, mỗi dòng là một khu của một tầng (dù tên có chữ "by_floor"). Trạng thái hiệu lực của ô được tính từ phiên đang mở, vé đang hiệu lực và đặt chỗ chưa hết hạn; MAINTENANCE và CHARGING giữ nguyên.';
 
 -- -----------------------------------------------------------------------------
 -- 8.2. View: v_revenue_today_by_method
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Doanh thu hôm nay",
---         "Tiền mặt: 18% | QR: 82%"), TL-07, TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_revenue_today_by_method AS
 WITH today_payments AS (
@@ -1961,11 +1904,10 @@ SELECT
     ) AS vietqr_pct
 FROM today_payments;
 
-COMMENT ON VIEW v_revenue_today_by_method IS 'Dashboard KPI card view computing today revenue split by CASH ("Tiền mặt") and VIETQR ("QR") on Trang chủ — Smart Mobility.png (TL-07, TL-14, TL-27).';
+COMMENT ON VIEW v_revenue_today_by_method IS 'Thống kê doanh thu hôm nay (CURRENT_DATE) tách tiền mặt và VietQR, kèm tỷ lệ. Gồm mọi chứng từ PAID, kể cả tiền cọc đặt chỗ.';
 
 -- -----------------------------------------------------------------------------
 -- 8.3. View: v_traffic_by_hour
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Lưu lượng xe vào / ra theo giờ"), TL-05, TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_traffic_by_hour AS
 WITH active_sessions AS (
@@ -2005,12 +1947,10 @@ FROM entry_hours en
 FULL OUTER JOIN exit_hours ex ON en.traffic_hour = ex.traffic_hour
 ORDER BY traffic_hour DESC;
 
-COMMENT ON VIEW v_traffic_by_hour IS 'Hourly vehicle entry and exit traffic aggregation for the "Lưu lượng xe vào / ra theo giờ" chart on Trang chủ — Smart Mobility.png (TL-05, TL-14, TL-27).';
+COMMENT ON VIEW v_traffic_by_hour IS 'Thống kê số lượt xe vào và ra theo từng giờ.';
 
 -- -----------------------------------------------------------------------------
 -- 8.4. View: v_ai_recognition_stats
--- Source: Frontend `Trang chủ — Smart Mobility.png` ("Tỷ lệ nhận diện AI: 98.4%",
---         "Nhập thủ công: 1.6%", "4 Cổng quét tự động"), TL-05, TL-06, TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_ai_recognition_stats AS
 SELECT
@@ -2043,12 +1983,10 @@ WHERE (l.slot_id IS NULL OR ps.deleted_at IS NULL)
   AND (l.vehicle_id IS NULL OR (v.deleted_at IS NULL AND c.deleted_at IS NULL))
   AND (l.ticket_id IS NULL OR t.deleted_at IS NULL);
 
-COMMENT ON VIEW v_ai_recognition_stats IS 'Dashboard KPI view computing AI vs manual plate recognition rates, average AI confidence, and active auto-scan gate count for Trang chủ — Smart Mobility.png (TL-05, TL-06, TL-14, TL-27).';
+COMMENT ON VIEW v_ai_recognition_stats IS 'Thống kê tỷ lệ nhận diện biển số bằng AI so với nhập tay, độ tin cậy AI trung bình và số cổng quét tự động đang bật.';
 
 -- -----------------------------------------------------------------------------
 -- 8.5. View: v_customer_status_summary
--- Source: Frontend `Khách hàng — Smart Mobility.png` ("Tổng khách hàng",
---         "Đang hoạt động", "Tạm ngừng", "Blacklist/Tạm khoá"), TL-08, TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_customer_status_summary AS
 SELECT
@@ -2059,11 +1997,10 @@ SELECT
 FROM customer
 WHERE deleted_at IS NULL;
 
-COMMENT ON VIEW v_customer_status_summary IS 'Customer KPI summary cards by status (ACTIVE, SUSPENDED, BLACKLISTED) for Khách hàng — Smart Mobility.png (TL-08, TL-14, TL-27).';
+COMMENT ON VIEW v_customer_status_summary IS 'Gồm bốn số tổng hợp khách hàng chưa xoá: tổng, ACTIVE, SUSPENDED, BLACKLISTED.';
 
 -- -----------------------------------------------------------------------------
 -- 8.6. View: v_revenue_statistics
--- Source: SRS 4.7.1 & TL-14, TL-27 (Monthly, quarterly, and annual revenue across active tickets and renewals)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_revenue_statistics AS
 WITH financial_events AS (
@@ -2116,11 +2053,10 @@ FROM financial_events
 GROUP BY report_year, report_quarter, report_month
 ORDER BY report_year DESC, report_quarter DESC, report_month DESC;
 
-COMMENT ON VIEW v_revenue_statistics IS 'Monthly, quarterly, and annual financial revenue aggregation across active ticket sales and renewals excluding soft-deleted records (SRS 4.7.1, OQ-11, TL-14, TL-27).';
+COMMENT ON VIEW v_revenue_statistics IS 'Thống kê doanh thu theo năm, quý, tháng, tách số vé bán và số lần gia hạn. Chỉ cộng ticket.price và ticket_renewal.additional_price; không gồm tiền cọc hay cước theo phiên.';
 
 -- -----------------------------------------------------------------------------
 -- 8.7. View: v_vehicle_traffic_daily
--- Source: SRS 4.7.2 & `Trang chủ — Smart Mobility.png` ("Lượt xe vào / ra hôm nay"), TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_vehicle_traffic_daily AS
 WITH active_sessions AS (
@@ -2161,11 +2097,10 @@ FROM entry_daily en
 FULL OUTER JOIN exit_daily ex ON en.traffic_date = ex.traffic_date
 ORDER BY traffic_date DESC;
 
-COMMENT ON VIEW v_vehicle_traffic_daily IS 'Daily vehicle entry, exit, and currently parked counts for Trang chủ and SRS 4.7.2 excluding soft-deleted entities (TL-14, TL-27).';
+COMMENT ON VIEW v_vehicle_traffic_daily IS 'Thống kê số lượt vào, ra và số phiên đang đỗ theo từng ngày.';
 
 -- -----------------------------------------------------------------------------
 -- 8.8. View: v_customer_vehicle_summary
--- Source: SRS 4.7.2 & `Khách hàng` / `Quản lý xe`, TL-14, TL-27
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_customer_vehicle_summary AS
 WITH vehicle_counts AS (
@@ -2202,17 +2137,16 @@ LEFT JOIN vehicle_counts vc ON vc.customer_id = c.id
 LEFT JOIN ticket_counts tc ON tc.customer_id = c.id
 WHERE c.deleted_at IS NULL;
 
-COMMENT ON VIEW v_customer_vehicle_summary IS 'Per-customer summary of registered vehicles and active tickets using pre-aggregated CTEs to prevent Cartesian duplication (SRS 4.7.2, TL-14, TL-27).';
+COMMENT ON VIEW v_customer_vehicle_summary IS 'Với mỗi khách chưa xoá: số xe đã đăng ký và số vé đang hiệu lực.';
 
 -- =============================================================================
--- SECTION 9: ADVANCE SLOT BOOKING MANAGEMENT (Milestones M1, M2, M3)
--- Source: SRS 4.8 & Frontend Advance Slot Booking (R1.1, R1.2, R1.3, TL-04, TL-14)
+-- PHẦN 9: ĐẶT CHỖ TRƯỚC (VIEW TỔNG QUAN)
 -- =============================================================================
 
 -- -----------------------------------------------------------------------------
 -- 9.1. View: v_booking_overview
--- Comprehensive overview of advance slot reservations with customer, vehicle,
--- slot hierarchy, and deposit payment details.
+-- Tổng quan các lượt đặt chỗ trước: khách hàng, xe, cấu trúc bãi/tầng/khu/ô
+-- và chứng từ tiền cọc.
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_booking_overview AS
 SELECT
@@ -2270,6 +2204,6 @@ LEFT JOIN vehicle_type vt ON vt.id = v.vehicle_type_id AND vt.deleted_at IS NULL
 LEFT JOIN payment p ON p.reservation_id = r.id AND p.deleted_at IS NULL
 WHERE r.deleted_at IS NULL;
 
-COMMENT ON VIEW v_booking_overview IS 'Comprehensive overview of advance slot reservations with customer, vehicle, slot hierarchy, and deposit payment details (R1.1, R1.2, R1.3, TL-04, TL-14).';
+COMMENT ON VIEW v_booking_overview IS 'Bản tổng hợp mọi lượt đặt chỗ: bãi/tầng/khu/ô, khách (hoặc tên khách vãng lai), xe, trạng thái, cọc, chứng từ cọc và các mốc thời gian. Nối LEFT JOIN với payment nên một lượt đặt có nhiều chứng từ sẽ cho nhiều dòng.';
 
 COMMIT;
