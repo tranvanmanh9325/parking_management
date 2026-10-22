@@ -1,0 +1,303 @@
+# Database Schema & Seed Catalog — Parking Management Backend
+
+This directory defines the enterprise physical relational database schema, lookup reference and synthetic sample seed data, and architectural documentation for the Smart Mobility Car Parking Lot Management System backend (`parking_management_backend`), targeting **PostgreSQL 18.6**. Under the **Frontend-First (`FE-First`)** specification hierarchy established in Rounds 23–28 ([`docs/requirements/06-frontend-srs-db-alignment.md`](../docs/requirements/06-frontend-srs-db-alignment.md), `TL-01`–`TL-43`), the 11 Frontend UI screens in `Parking Project` are the **primary source of requirements**, while `Quan ly bai dau xe oto_SRS_v4.1.docx` ([`docs/requirements/00-srs-catalog.md`](../docs/requirements/00-srs-catalog.md)) is authoritative for the SRS content and **secondary** where the Frontend is silent.
+
+---
+
+## 1. Database Execution & Loading Instructions
+
+### 1.1. Native Execution via `psql` (Local / CI Pipeline)
+
+Execution must specify `ON_ERROR_STOP=1` to ensure execution halts immediately upon any syntax or constraint violation:
+
+```bash
+# Load DDL Schema and Analytical Views (Zero DROP statements, transactional BEGIN...COMMIT)
+psql -h 127.0.0.1 -p 5432 -U parking_user -d parking_db -v ON_ERROR_STOP=1 -f db/01-schema.sql
+
+# Load Reference & Sample Seed Data (Idempotent — safe to run multiple times)
+psql -h 127.0.0.1 -p 5432 -U parking_user -d parking_db -f db/02-seed.sql -v ON_ERROR_STOP=1
+```
+
+### 1.2. Execution via Docker Compose Service
+
+When launching the backend PostgreSQL service defined in `docker-compose.yml`:
+
+```bash
+# Start PostgreSQL 18.6 container
+docker compose up -d db
+
+# Execute SQL scripts inside container
+docker compose exec -T db psql -U parking_user -d parking_db -v ON_ERROR_STOP=1 < db/01-schema.sql
+docker compose exec -T db psql -U parking_user -d parking_db -v ON_ERROR_STOP=1 < db/02-seed.sql
+```
+
+### 1.3. Two-Part Seed Structure (`db/02-seed.sql`) & Synthetic Data Attestation
+
+- **Cutting Out Part 2 for Production Deployment (Two Sentences)**: [`db/02-seed.sql`](02-seed.sql) is divided inside a single transaction into **PART 1** (mandatory reference lookup catalogs and the default parking lot) and **PART 2** (a single contiguous sample operational data block delimited by `-- PART 2 START: SAMPLE OPERATIONAL DATA` and `-- PART 2 END: SAMPLE OPERATIONAL DATA`). For a clean production deployment that seeds only reference catalogs, delete the lines between `-- PART 2 START: SAMPLE OPERATIONAL DATA` and `-- PART 2 END: SAMPLE OPERATIONAL DATA` (keeping `COMMIT;` at the end of the file) before running `psql -v ON_ERROR_STOP=1 -f db/02-seed.sql`.
+- **Synthetic Personal Data & Unusable Password Attestation**: **ALL personal data in [`db/02-seed.sql`](02-seed.sql) is 100% synthetic** and describes no real person; all names, 10-digit mobile numbers, 12-digit CCCD numbers, street addresses, and automobile license plates are deterministically generated from fixed seed `20261017`, all email addresses use only RFC 2606 reserved domains (`@example.com`, `@example.org`, `@example.net`), and all `account.password_hash` values use the Django unusable-password convention (`!` followed by 40 alphanumeric characters) so sample accounts can never authenticate until the application sets a real password at runtime.
+
+---
+
+## 2. Frontend & SRS Entity Mapping Table
+
+The table below maps the Frontend UI screens/labels (`TL-01`–`TL-43`) and secondary SRS v4.1 entity names to their normalized PostgreSQL relational database tables:
+
+| Frontend / SRS Name | Relational Table Name | Architectural & Business Representation |
+| :--- | :--- | :--- |
+| `Đăng nhập` / `ACCOUNT` | `account` | Authentication principals using `email` (`lower(email)` unique per `TL-21`) and/or `phone`, password hashes, and roles (`MANAGER`, `EMPLOYEE`, `CUSTOMER`) (`TL-01`, `TL-21`). |
+| `Nhân viên` / `NHAN_VIEN` | `employee` | Staff profiles (`NV001`, `NV0005`), contact details (`lower(email)` unique per `TL-21`), optional SRS fields (`TL-18`), status (`ACTIVE`, `INACTIVE`), position, and address links (`TL-11`, `TL-15`, `TL-18`, `TL-21`). |
+| `Chức vụ` | `position` | Staff position catalog: `Quản lý`, `Nhân viên vận hành`, `Nhân viên thu ngân`, `Kỹ thuật viên` (`TL-11`). |
+| `Khách hàng` / `KHACH_HANG` | `customer` | Customer profiles (`KH0001`), CCCD, optional SRS fields (`TL-18`, `lower(email)` unique per `TL-21`), status (`ACTIVE`, `SUSPENDED`, `BLACKLISTED`), and Decree 13 anonymization (`TL-08`, `TL-15`, `TL-18`, `TL-21`). |
+| `Blacklist biển số` | `plate_blacklist` | Blacklisted license plates (including visitor plates) with normalized uniqueness and unpaid debt amount (`TL-08`). |
+| `Loại xe` | `vehicle_type` | Car-only vehicle type catalog: `CAR` (`Ô tô`, standard passenger car) and `EV` (`Xe điện`, electric car `"ô tô điện"`) (`TL-09`, `TL-20`). |
+| `Quản lý xe` / `XE` | `vehicle` | Customer-linked cars (`XE0001`), raw + normalized plate, ticket preferences, and `notes` (`TL-09`, `TL-15`, `TL-20`). |
+| `Loại vé` / `LoaiVe` | `ticket_type` | Subscription tariff catalog: `DAILY` (`50k`), `MONTHLY` (`500k`), `QUARTERLY` (`1.2M`), `YEARLY` (`4.8M`) (`TL-10`). |
+| `Bãi xe` -> `Tầng` -> `Khu` -> `Ô đỗ` | `parking_lot`, `parking_floor`, `parking_zone`, `parking_slot` | 4-level physical parking structure (`Bãi xe Smart Mobility`, `B1..B2/F1`, `Khu A..C`, `A-01`/`B-01`/`C-01`) (`TL-02`, `TL-03`). |
+| `Chính sách đặt trước` | `booking_policy` | Advance slot booking policies per parking lot (grace periods, advance booking window, deposit percentage, cancellation notice, refund rules) (`TL-44`, `OQ-87`–`OQ-94`). |
+| `Đặt trước ô đỗ` | `slot_reservation` | Pre-booked slot reservations with GiST anti-overlap exclusion and automatic slot `RESERVED` sync (`TL-04`, `OQ-87`–`OQ-94`). |
+| `Quản lý vé` / `VE` | `ticket`, `ticket_renewal` | Subscription tickets (`ACTIVE`, `RENEWING`, `EXPIRED`, `CANCELLED`; `"Sắp hết hạn"` derived per `TL-28`) and renewal history (`TL-10`, `TL-15`). |
+| `Cổng vào / Cổng ra` | `parking_gate` | Entry and exit barrier gates with camera identifiers (`Cổng vào 1/2`, `Cổng ra 1/2/3`) (`TL-06`). |
+| `Lịch sử ra/vào` / `DoXe` | `vehicle_entry_exit_log` | Parking sessions (`session_code`) supporting registered and visitor vehicles (`vehicle_id NULL` with `TL-17` auto-link), AI OCR confidence, and `fee_amount` (`TL-05`, `TL-06`, `TL-17`, `OQ-92`). |
+| `Giao dịch / Thanh toán` | `payment` | Financial transactions (`CASH`, `VIETQR`) targeting exactly one session, ticket, renewal, or reservation deposit (`TL-07`, `OQ-90`). |
+| `Hoạt động gần đây` | `activity_log` | Append-only operational activity log displayed on the Parking Map screen (`TL-12`). |
+| `Cảnh báo bất thường & khẩn cấp` | `system_alert` | Dashboard security and operational alerts (`BLACKLIST_PLATE`, `OVERSTAY`, `CAMERA_QUALITY`, `SYSTEM`) (`TL-13`). |
+
+---
+
+## 3. Database Entity Catalog & Structural Metrics
+
+The physical database schema (Schema v2) comprises strictly **29 Base Tables**, **9 Analytical Views**, **74 Foreign Keys** (100% `ON DELETE RESTRICT`, `0` non-`RESTRICT`), **365 Base Table Columns** (100% documented with `COMMENT ON COLUMN`), **98 View Columns** (bringing total columns to **463**, with `0` undocumented tables, views, or columns), **93 Triggers**, **17 Trigger Functions**, and **11 Non-Trigger Functions** (total **28 User Functions**, all `28` configured with fixed `SET search_path = public, pg_temp` and `REVOKE ALL ON FUNCTION ... FROM PUBLIC` on all `17` internal trigger functions and `fn_controlled_purge`; **271 Functions** in schema `public` including 212 `btree_gist` and 31 `pg_trgm` extension functions), **158 `CHECK` Constraints**, **9 `UNIQUE` Constraints**, **2 GiST `EXCLUDE` Constraints**, and **142 Indexes** (`29` `pk_*` primary-key indexes, `40` partial unique indexes + `9` `UNIQUE` constraint indexes = `49` `uq_*` unique indexes, `62` `idx_*` secondary indexes — comprising 56 secondary B-tree indexes and 6 partial GIN trigram indexes per `TL-41`, and `2` `excl_*` GiST exclusion indexes):
+
+| Table / View Name | Type | Cols | FKs | Functional Summary |
+| :--- | :---: | :---: | :---: | :--- |
+| `account` | Table | 12 | 1 | Email/phone login principals (`lower(email)` unique per `TL-21`), password hashes, and RBAC roles (`TL-01`, `TL-21`). |
+| `persistent_login_token` | Table | 9 | 1 | OWASP persistent remember-me session tokens (`TL-01`, ADR-0004). |
+| `password_reset_token` | Table | 7 | 1 | One-time password recovery tokens (`TL-01`, `SCO-05`). |
+| `position` | Table | 9 | 1 | Staff position catalog (`QL`, `NVVH`, `NVTN`, `KTV`) (`TL-11`). |
+| `administrative_province` | Table | 5 | 0 | Level-1 provincial administrative units (`TL-15`, `OQ-50`). |
+| `administrative_district` | Table | 6 | 1 | Level-2 district administrative units (`TL-15`, `OQ-50`). |
+| `administrative_ward` | Table | 6 | 1 | Level-3 ward/commune administrative units (`TL-15`, `OQ-50`). |
+| `employee` | Table | 20 | 5 | Staff profiles (`NV001`..`NV0005`), `ACTIVE`/`INACTIVE` status, optional SRS fields (`TL-18`), `lower(email)` unique (`TL-21`), and address FKs (`TL-11`). |
+| `customer` | Table | 22 | 4 | Customer profiles (`KH0001`), `ACTIVE`/`SUSPENDED`/`BLACKLISTED` status, optional SRS fields (`TL-18`), `lower(email)` unique (`TL-21`), and PII flags (`TL-08`). |
+| `plate_blacklist` | Table | 12 | 2 | Blacklisted license plates with normalized uniqueness and unpaid debt (`TL-08`). |
+| `vehicle_type` | Table | 9 | 1 | Car-only vehicle type catalog (`CAR`, `EV`) (`TL-09`, `TL-20`). |
+| `ticket_type` | Table | 11 | 1 | Subscription ticket tariff catalog (`DAILY`, `MONTHLY`, `QUARTERLY`, `YEARLY`) (`TL-10`). |
+| `vehicle` | Table | 18 | 4 | Registered customer cars with `license_plate_norm`, ticket preferences, and `notes` (`TL-09`, `TL-20`). |
+| `parking_lot` | Table | 10 | 1 | Top-level parking facility (`Bãi xe Smart Mobility`) (`TL-02`). |
+| `parking_floor` | Table | 10 | 2 | Parking floors (`B1..B2`, `F1`) scoped per lot (`TL-02`). |
+| `parking_zone` | Table | 10 | 2 | Parking zones (`A..C`) scoped per floor (`TL-02`). |
+| `parking_slot` | Table | 16 | 2 | Physical parking slots with `slot_kind` (`STANDARD`, `PRIORITY`, `EV_CHARGING`) and 5 statuses (`TL-02`, `TL-03`). |
+| `slot_allowed_vehicle_type` | Table | 3 | 2 | M:N mapping of allowed vehicle types per parking slot (`TL-15`, `TL-20`). |
+| `booking_policy` | Table | 16 | 2 | Advance slot booking policies per parking lot (grace periods, advance window, deposit amount, refund rules) (`TL-44`, `OQ-87`..`OQ-94`). |
+| `slot_reservation` | Table | 26 | 6 | Pre-booked slot reservations with GiST anti-overlap exclusion, channels, hold expiry, deposit, check-in/out timestamps, and cancellation tracking (`TL-04`, `OQ-87`..`OQ-94`). |
+| `ticket` | Table | 17 | 6 | Issued parking tickets with GiST anti-overlap exclusion and `RENEWING` status (`TL-10`). |
+| `ticket_renewal` | Table | 15 | 6 | Ticket renewal history tracking old/new types, slots, prices, and `notes` (`TL-10`, `TL-15`). |
+| `parking_gate` | Table | 13 | 2 | Entry and exit gates (`IN`, `OUT`) with `camera_status` and `is_auto_scan` (`TL-06`). |
+| `vehicle_entry_exit_log` | Table | 23 | 8 | Parking sessions (`session_code`), nullable `vehicle_id` (`TL-17` auto-link), reservation link, AI OCR metrics, and `fee_amount` (`TL-05`, `TL-06`, `TL-17`, `OQ-92`). |
+| `payment` | Table | 18 | 6 | Unified payments (`CASH`, `VIETQR`) targeting exactly one session, ticket, renewal, or reservation deposit (`TL-07`, `OQ-90`). |
+| `activity_log` | Table | 7 | 1 | Append-only operational activity feed (`Hoạt động gần đây`) (`TL-12`). |
+| `system_alert` | Table | 10 | 1 | Dashboard security and operational anomaly alerts (`TL-13`). |
+| `news` | Table | 15 | 2 | Facility news articles (`TL-15`, `SCO-03`). |
+| `notification` | Table | 10 | 2 | Portal notifications (`TL-15`). |
+| **Total Base Tables** | **29** | **365** | **74** | **100% `ON DELETE RESTRICT`, `0` `CASCADE`, `0` `DROP` statements** |
+| `v_slot_occupancy_by_floor` | View | 17 | — | Real-time floor/zone occupancy, EV charging, priority slots, and utilization percentage (`TL-14`). |
+| `v_revenue_today_by_method` | View | 6 | — | Today's paid revenue split across `CASH` (`Tiền mặt`) and `VIETQR` (`QR`) (`TL-07`, `TL-14`). |
+| `v_traffic_by_hour` | View | 4 | — | Hourly entry/exit traffic series (`00..23`) for sessions (`TL-14`). |
+| `v_ai_recognition_stats` | View | 7 | — | AI plate recognition accuracy, scan count, and manual count (`TL-06`, `TL-14`). |
+| `v_customer_status_summary` | View | 4 | — | Customer KPI summary (`total`, `active`, `suspended`, `blacklisted`) (`TL-08`). |
+| `v_revenue_statistics` | View | 6 | — | Monthly, quarterly, and annual revenue aggregation (`TL-07`, `TL-15`). |
+| `v_vehicle_traffic_daily` | View | 4 | — | Daily vehicle traffic flow metrics (`TL-15`). |
+| `v_customer_vehicle_summary` | View | 7 | — | Customer registered vehicle and active ticket counts (`TL-15`). |
+| `v_booking_overview` | View | 43 | — | Analytical overview of advance slot bookings combining customer, vehicle, slot, lot, floor, zone, policy, payment, and session timestamps (`TL-44`, `OQ-87`..`OQ-94`). |
+
+### 3.1. Database Triggers & Procedural Functions Summary
+
+The database enforces real-time synchronization, temporal validity, OCC versioning, append-only immutability, barrier access security, and full delete policy safeguards (soft-delete, restore, controlled purge) through **93 Triggers**, **17 Trigger Functions**, and **11 Non-Trigger Functions** (total **28 User Functions**, all `28` configured with fixed `SET search_path = public, pg_temp` and `REVOKE ALL ON FUNCTION ... FROM PUBLIC` on all `17` internal trigger functions and `fn_controlled_purge`; **271 Functions** in schema `public` including 212 `btree_gist` and 31 `pg_trgm` extension functions):
+
+1. `fn_normalize_license_plate(p_input TEXT)` (`IMMUTABLE STRICT PARALLEL SAFE` SQL function): Normalizes license plates via `UPPER(REGEXP_REPLACE(p_input, '[^A-Za-z0-9]', '', 'g'))` for stored generated columns `vehicle.license_plate_norm`, `vehicle_entry_exit_log.license_plate_norm`, and `plate_blacklist.license_plate_norm` (`TL-05`, `TL-08`, `TL-09`, `OQ-75`).
+2. `fn_update_row_version_and_timestamp()` (`18` Triggers): Attached `BEFORE UPDATE` on `account`, `position`, `employee`, `customer`, `plate_blacklist`, `vehicle_type`, `ticket_type`, `vehicle`, `parking_lot`, `parking_floor`, `parking_zone`, `parking_slot`, `booking_policy`, `slot_reservation`, `ticket`, `parking_gate`, `payment`, and `news` (`TL-15`, `OQ-64`).
+3. `fn_guard_parking_slot_status()` (`1` Trigger: `trg_guard_parking_slot_status` on `parking_slot`): Blocks manual status changes that contradict open sessions (`PROP-4.5.2-P02`, `PROP-4.5.2-P03`) or active tickets/reservations (`PROP-4.5.2-P04`) (`TL-03`, `OQ-81`).
+4. `fn_sync_ticket_status()` (`1` Trigger: `trg_ticket_status_sync` on `ticket`): Rejects assigning a `MAINTENANCE` slot (`PROP-4.5.2-P01`), validates slot allowed vehicle type compatibility (`PROP-SLOT-VEHICLE-TYPE-MISMATCH`, `TL-38`), and auto-transitions active tickets to `EXPIRED` when `effective_to <= CURRENT_TIMESTAMP` (`TL-03`, `TL-10`, `TL-38`, `OQ-63`).
+5. `fn_guard_slot_reservation_write()` (`1` Trigger: `trg_guard_slot_reservation_write` on `slot_reservation`): Enforces `booking_channel` rules (`CUSTOMER_PORTAL` requires `customer_id` and `vehicle_id`), blocks `BLACKLISTED`/`SUSPENDED` customers (`PROP-BOOK-CUSTOMER-BLOCKED`) and blacklisted plates (`PROP-BOOK-PLATE-BLACKLISTED`), enforces `booking_policy` lead-time and duration bounds (`PROP-BOOK-PAST-WINDOW`, `PROP-BOOK-ADVANCE-LIMIT`, `PROP-BOOK-DURATION-LIMIT`), rejects reserving a `MAINTENANCE` slot (`PROP-4.5.2-P01`), validates slot allowed vehicle type compatibility (`PROP-SLOT-VEHICLE-TYPE-MISMATCH`, `TL-38`), rejects a slot already covered by an overlapping active ticket (`MSG-4.5.2-M02`), and auto-transitions expired reservations (`TL-04`, `TL-38`, `OQ-87`..`OQ-94`).
+6. `fn_guard_slot_reservation_on_entry()` (`1` Trigger: `trg_guard_slot_reservation_on_entry` on `vehicle_entry_exit_log`): Auto-links `NEW.vehicle_id` when `NEW.vehicle_id IS NULL` and the normalized plate matches an active registered vehicle (`TL-17`), allows unregistered visitor entries (`vehicle_id IS NULL`), verifies normalized plate match on open sessions when `vehicle_id` or `license_plate` is inserted or changed (`MSG-4.5.1-M02`), blocks `MAINTENANCE` slots (`PROP-4.5.2-P01`), verifies slot allowed vehicle type compatibility (`PROP-SLOT-VEHICLE-TYPE-MISMATCH`, `TL-38`), blocks slots reserved by another vehicle's ticket (`MSG-4.5.2-M02`), auto-links `NEW.reservation_id` and transitions a matching `CONFIRMED` reservation to `CHECKED_IN` when the owner's vehicle arrives within `[reserved_from - early_checkin_minutes, reserved_from + grace_minutes]`, transitions the linked `CHECKED_IN` reservation to `COMPLETED` on exit (`exit_time IS NOT NULL`), and blocks other vehicles from entering a slot held by a reservation (`PROP-4.5.2-P05`) (`TL-03`, `TL-04`, `TL-05`, `TL-17`, `TL-38`, `OQ-67`, `OQ-81`, `OQ-92`).
+7. `fn_recompute_slot_status(p_slot_id BIGINT)` + `fn_sync_slot_status_on_traffic()`, `fn_sync_slot_status_on_ticket()`, `fn_sync_slot_status_on_reservation()` (`3` `AFTER` Triggers): Deterministically recompute `parking_slot.status` (`OCCUPIED` -> `RESERVED` -> `AVAILABLE`, preserving `MAINTENANCE` and `CHARGING`) under `FOR UPDATE` row lock and synchronize `vehicle.ticket_type_id` and `vehicle.ticket_expires_at` (`TL-03`, `TL-04`, `TL-15`, `OQ-52`, `OQ-63`).
+8. `fn_prevent_activity_log_mutation()` (`1` Trigger: `trg_activity_log_immutable` on `activity_log`): Blocks `UPDATE` and `DELETE` on `activity_log` (`PROP-4.5.2-P06`, `TL-12`, `OQ-81`).
+9. `fn_guard_hard_immutable_table()` (`8` Triggers): Attached `BEFORE DELETE` on 5 business/financial/audit tables (`ticket`, `ticket_renewal`, `payment`, `vehicle_entry_exit_log`, `system_alert`) and 3 reference tables (`administrative_province`, `administrative_district`, `administrative_ward`), enforcing absolute hard-delete immutability (`TL-24`, `TL-36`, `TL-37`, ADR-0003). Authentication token tables (`persistent_login_token`, `password_reset_token`) allow direct plain `DELETE` per `TL-36`, and `slot_allowed_vehicle_type` is guarded by `fn_guard_slot_allowed_vehicle_type_delete()` per `TL-37`.
+10. `fn_guard_slot_allowed_vehicle_type_delete()` (`1` Trigger: `trg_guard_slot_allowed_vehicle_type_delete` on `slot_allowed_vehicle_type`): Guards direct `DELETE` statements on slot vehicle type allocations, rejecting disassociation if the slot is currently referenced by open sessions (`exit_time IS NULL`), active tickets, or active reservations (`PROP-DEL-SAVT-IN-USE`, `TL-37`).
+11. `fn_guard_prevent_plain_delete()` (`17` Triggers): Attached `BEFORE DELETE` across all 17 purgeable tables (including `booking_policy`), blocking direct client DELETE statements and requiring authorization via `fn_controlled_purge()` with call-stack inspection and cryptographic transaction nonce (`TL-24`).
+12. `fn_controlled_purge(p_table_name VARCHAR DEFAULT NULL, p_retention INTERVAL DEFAULT INTERVAL '30 days', p_dry_run BOOLEAN DEFAULT TRUE, p_purged_by BIGINT DEFAULT NULL, p_target_id BIGINT DEFAULT NULL)` (`Non-Trigger Function`, `SECURITY DEFINER`): Secure administrative purge routine returning 5 columns (`table_name`, `eligible_count`, `purged_count`, `status`, `details`) for trash records older than retention interval. Enforces a strict `>= 30 days` retention floor (`SQLSTATE 22023`, `TL-40`), Decree 13/2023/ND-CP customer anonymization checks, per-row foreign key exception skipping, co-purge cleanup of linked tokens in the same transaction when purging `account` (`TL-36`), dry-run simulation, and audit logging to `activity_log` (`TL-24`, `TL-36`, `TL-40`). `REVOKE ALL ON FUNCTION fn_controlled_purge(VARCHAR, INTERVAL, BOOLEAN, BIGINT, BIGINT) FROM PUBLIC;`.
+13. `fn_guard_soft_delete_and_restore()` (`19` Triggers): Attached `BEFORE UPDATE OF deleted_at` on all 19 soft-deletable tables (including `booking_policy`); guards business constraints on delete (DEL-01..DEL-09, TL-25 probes), blocks soft-deleting settled payments (`status IN ('PAID', 'REFUNDED')`, `PROP-DEL-PAYMENT-SETTLED`, `TL-39`) and active reservations (`PROP-DEL-RSV-ACTIVE`), and auto-clears `deleted_by = NULL` while validating active parent hierarchy upon restore (`TL-23`, `TL-25`, `TL-26`, `TL-39`, `TL-44`).
+14. `fn_audit_soft_delete_and_restore()` (`19` Triggers): Attached `AFTER UPDATE OF deleted_at` on all 19 soft-deletable tables (including `booking_policy`), recording `SOFT_DELETE` and `RESTORE` audit events into `activity_log` (`TL-26`).
+15. `fn_guard_payment_update()` (`1` Trigger: `trg_guard_payment_update` on `payment`): Enforces valid payment status transitions (`UNPAID -> PAID | CANCELLED`, `PAID -> REFUNDED` only; terminal statuses; `PROP-PAY-STATUS-TRANSITION`) and locks settled payment financial/relational link columns (`amount`, `method`, `paid_at`, `session_id`, `ticket_id`, `renewal_id`, `reservation_id`, `code`; `PROP-PAY-SETTLED-IMMUTABLE`), allowing only harmless `notes` edits (`TL-42`).
+16. `fn_guard_slot_reservation_status_transition()` (`1` Trigger: `trg_slot_reservation_status_guard` on `slot_reservation`): Enforces valid booking lifecycle state machine transitions (`PENDING_PAYMENT -> CONFIRMED | CANCELLED | EXPIRED`, `CONFIRMED -> CHECKED_IN | CANCELLED | NO_SHOW`, `CHECKED_IN -> COMPLETED`, terminal immutable statuses `COMPLETED`, `CANCELLED`, `EXPIRED`, `NO_SHOW`; `PROP-BOOK-TERMINAL-IMMUTABLE`, `PROP-BOOK-TERMINAL-FIELDS-IMMUTABLE`, `PROP-BOOK-STATUS-TRANSITION`, `TL-44`, `OQ-88`).
+17. `fn_sync_reservation_on_payment()` (`1` Trigger: `trg_payment_sync_reservation` on `payment`): Synchronizes reservation deposit settlement, transitioning linked `slot_reservation` from `PENDING_PAYMENT` to `CONFIRMED` (`hold_expires_at = NULL`) upon payment `PAID` (`OQ-91`).
+
+### 3.2. Advance Slot Booking Stored Functions (`TL-44`, `OQ-87`..`OQ-94`)
+
+The database provides **4 Operational Booking Stored Functions** providing an atomic transactional interface for advance slot booking:
+
+1. `fn_find_available_slots(p_lot_id BIGINT, p_vehicle_type_id BIGINT, p_from TIMESTAMPTZ, p_until TIMESTAMPTZ, p_floor_id BIGINT DEFAULT NULL)`: Queries slots matching vehicle type (and optional floor filter) with `0` active overlaps in `slot_reservation` (`PENDING_PAYMENT`, `CONFIRMED`, `CHECKED_IN`) or `ticket` (`ACTIVE`, `RENEWING`), excluding `MAINTENANCE` slots and open sessions when the window intersects the present (`OQ-87`, `OQ-89`).
+2. `fn_create_booking(p_lot_id BIGINT, p_customer_id BIGINT, p_vehicle_id BIGINT, p_slot_id BIGINT, p_reserved_from TIMESTAMPTZ, p_reserved_until TIMESTAMPTZ, p_booking_channel VARCHAR DEFAULT 'CUSTOMER_PORTAL', p_reserved_name VARCHAR DEFAULT NULL, p_reserved_phone VARCHAR DEFAULT NULL, p_notes TEXT DEFAULT NULL, p_created_by BIGINT DEFAULT NULL)`: Atomic booking creation with lead time, duration, policy, and concurrency validation (`23P01` mapped to `PROP-BOOK-SLOT-ALREADY-TAKEN` / `PROP-BOOK-VEHICLE-DOUBLE-BOOKING`), generating `code` (`RSV...`), setting `hold_expires_at`, and creating the linked `UNPAID` deposit payment row (or confirming directly if `deposit_amount = 0`) (`OQ-87`..`OQ-91`).
+3. `fn_cancel_booking(p_reservation_id BIGINT, p_cancelled_by BIGINT, p_cancel_reason TEXT)`: Secure booking cancellation checking policy `cancel_free_before_minutes` and transitioning the linked deposit payment (`UNPAID -> CANCELLED`, `PAID -> REFUNDED` if early, or retaining `PAID` as forfeited revenue if late), returning JSONB summary (`OQ-91`).
+4. `fn_expire_stale_bookings()`: Idempotent batch sweep transitioning stale `PENDING_PAYMENT` reservations past `hold_expires_at` to `EXPIRED` (with `UNPAID` payment -> `CANCELLED`) and `CONFIRMED` reservations past `reserved_from + grace_minutes` without check-in to `NO_SHOW`, returning the total integer count of rows handled (`OQ-93`).
+
+### 3.3. Statistical Stored Functions for Date-Range Reporting (`TL-15`, `TL-27`, SRS 4.7.1 & 4.7.2)
+
+The database provides **4 Statistical Functions** accepting `(p_from_date DATE, p_to_date DATE)` and validating `p_from_date <= p_to_date` (`PROP-4.7.2-P02`, `OQ-37`):
+
+1. `fn_stat_vehicles_by_day(p_from_date DATE, p_to_date DATE)`
+2. `fn_stat_vehicles_by_floor(p_from_date DATE, p_to_date DATE)`
+3. `fn_stat_vehicles_by_customer(p_from_date DATE, p_to_date DATE)`
+4. `fn_stat_revenue_by_period(p_from_date DATE, p_to_date DATE)`
+
+### 3.4. Substring Text Search Acceleration via pg_trgm & GIN Indexes (`TL-41`)
+
+The database accelerates substring and prefix text searches (`ILIKE '%...%'`) across high-frequency operational screens (Screens `02`, `03`, `04`, `05`, `07`) through the `pg_trgm` extension and **6 Partial GIN Trigram Indexes**:
+
+1. `idx_customer_full_name_trgm`: `customer (full_name gin_trgm_ops) WHERE deleted_at IS NULL`
+2. `idx_customer_phone_trgm`: `customer (phone gin_trgm_ops) WHERE deleted_at IS NULL`
+3. `idx_customer_idcard_trgm`: `customer (identity_card_number gin_trgm_ops) WHERE deleted_at IS NULL`
+4. `idx_vehicle_plate_trgm`: `vehicle (license_plate_norm gin_trgm_ops) WHERE deleted_at IS NULL`
+5. `idx_log_license_plate_trgm`: `vehicle_entry_exit_log (license_plate_norm gin_trgm_ops)`
+6. `idx_log_session_code_trgm`: `vehicle_entry_exit_log (session_code gin_trgm_ops)`
+
+---
+
+## 4. Key Architectural & Database Design Decisions (Schema v2)
+
+- **Frontend-First Login, Self-Registration & Case-Insensitive Email Uniqueness (`TL-01`, `TL-21`, `OQ-71`, `OQ-84`)**: `account` authenticates via `email` and/or `phone` (`ck_account_login_identifier_present`), enforces case-insensitive active email uniqueness on `lower(email)` (`uq_account_email_active`, `uq_employee_email_active`, `uq_customer_email_active`) and phone uniqueness (`uq_account_phone_active`), and supports `CUSTOMER` self-registration.
+- **4-Level Parking Hierarchy & Slot Kinds (`TL-02`, `TL-03`, `OQ-73`, `OQ-77`)**: Physical topology is normalized into `parking_lot -> parking_floor -> parking_zone -> parking_slot` with `fk_slot_zone FOREIGN KEY (zone_id) REFERENCES parking_zone (id) ON DELETE RESTRICT`, `slot_kind IN ('STANDARD', 'PRIORITY', 'EV_CHARGING')`, `status IN ('AVAILABLE', 'OCCUPIED', 'RESERVED', 'CHARGING', 'MAINTENANCE')`, and `ck_slot_charging_requires_ev_kind`.
+- **Slot Reservations & Ticket Anti-Overlap (`TL-04`, `TL-10`, `OQ-87`..`OQ-90`)**: `ticket` (`excl_ticket_slot_time_overlap`) and `slot_reservation` (`excl_reservation_slot_time_overlap`, `excl_reservation_vehicle_time_overlap`) use `btree_gist` exclusion constraints over `tstzrange(..., '[)')` to prevent overlapping allocations on the same slot or by the same vehicle across all holding booking states (`PENDING_PAYMENT`, `CONFIRMED`, `CHECKED_IN`).
+- **Unregistered Visitor Sessions, Gates & AI Recognition (`TL-05`, `TL-06`, `TL-17`, `OQ-65`, `OQ-66`)**: `vehicle_entry_exit_log` supports visitor vehicles (`vehicle_id NULL` with `TL-17` active registered-plate auto-link), unique `session_code`, `entry_gate_id`/`exit_gate_id` referencing `parking_gate`, `ai_confidence`, `recognition_source`, `review_status`, and `fee_amount`, guarded by 3 open-session partial unique indexes (`uq_log_open_session_slot`, `uq_log_open_session_vehicle`, `uq_log_open_session_plate`).
+- **Unified Payments (`TL-07`, `OQ-72`, `OQ-91`)**: `payment` supports `CASH` and `VIETQR` methods with `ck_payment_single_target CHECK (num_nonnulls(session_id, ticket_id, renewal_id, reservation_id) = 1)` and `ck_payment_paid_timestamp`.
+- **Customer & Plate Blacklist (`TL-08`)**: `customer` tracks `status IN ('ACTIVE', 'SUSPENDED', 'BLACKLISTED')` (`ck_customer_blacklist_reason`), while `plate_blacklist` tracks blacklisted plates (including visitors) using stored generated `license_plate_norm` (`uq_plate_blacklist_norm_active`).
+- **Append-Only Activity Log & System Alerts (`TL-12`, `TL-13`)**: `activity_log` is protected against `UPDATE`/`DELETE` by `trg_activity_log_immutable`, and `system_alert` tracks operational/security anomalies (`BLACKLIST_PLATE`, `OVERSTAY`, `CAMERA_QUALITY`, `SYSTEM`).
+
+---
+
+## 5. Audit Trail Architecture via `django-simple-history`
+
+In accordance with ADR-0003:
+
+- When the Django backend application is initialized, `django-simple-history` automatically generates historical audit tables (`historical_employee`, `historical_ticket`, `historical_customer`).
+- Application-level soft deletion updates `deleted_at` and `deleted_by` (`ck_*_soft_delete_pair`, `TL-23`), guarded by `fn_guard_soft_delete_and_restore()` (`TL-25`, `TL-26`, `TL-39`, `TL-44`), audited by `fn_audit_soft_delete_and_restore()` (`TL-26`). Deletion policies strictly distinguish 17 purgeable tables protected against direct client `DELETE` via `fn_guard_prevent_plain_delete()` (including `booking_policy`) (`TL-24`), 8 hard-immutable tables via `fn_guard_hard_immutable_table()` (`TL-24`, `TL-36`, `TL-37`), 1 junction table guarded against active-usage `DELETE` via `fn_guard_slot_allowed_vehicle_type_delete()` (`TL-37`), 1 immutable audit table (`activity_log`), and 2 token tables allowing direct plain `DELETE` for session rotation and revocation (`TL-36`). All `74` foreign keys enforce `ON DELETE RESTRICT` with `0` cascading deletes.
+
+---
+
+## 6. Decision Log Index (`docs/requirements/01-decision-log.md`)
+
+All technical proposals and finalized requirement/schema decisions (`OQ-01`–`OQ-94` and `TL-01`–`TL-44`) are recorded in [`docs/requirements/01-decision-log.md`](../docs/requirements/01-decision-log.md) and [`docs/requirements/06-frontend-srs-db-alignment.md`](../docs/requirements/06-frontend-srs-db-alignment.md):
+
+- **OQ-01..OQ-70**: Core security, administrative hierarchy (`OQ-50`, `OQ-62`), car-only vehicle types with deferred seat classes (`OQ-49`, `TL-20`), OCC & soft-delete guards (`OQ-64`), and operational constraints.
+- **OQ-71..OQ-77**: Schema v2 structural and seed decisions (`TL-01`–`TL-20`).
+- **OQ-78**: Schema v2 ERD model and 400 DPI diagram exports (`db/04-erd.png`–`db/09-erd-reference-views.png`).
+- **OQ-79**: Annual ticket (`Vé năm`) default price (`4.800.000đ`, `DECIDED` per `TL-22`).
+- **OQ-80**: Per-session tariff computed by the application and stored in `vehicle_entry_exit_log.fee_amount` (`DECIDED-DEFERRED` per `TL-22` until the Owner supplies a price list).
+- **OQ-81**: Database `CHECK` status value lists and guard messages (`DECIDED` per `TL-22`, `TL-37`–`TL-39`, `TL-42`).
+- **OQ-82**: Provider-agnostic `VIETQR` payment storage via `payment.method` and `payment.provider_ref` (`DECIDED` per `TL-22`).
+- **OQ-83**: Camera / AI recognition service integration out of database scope; only `ai_confidence`, `recognition_source`, and `review_status` are stored (`DECIDED` per `TL-22`).
+- **OQ-84**: Case-insensitive email uniqueness on `lower(email)` across `account`, `employee`, and `customer` (`DECIDED` per `TL-21`, `TL-22`, `TL-36`).
+- **OQ-87..OQ-94 (Advance Slot Booking Management Module)**:
+  - **OQ-87**: Extend existing `slot_reservation` table in place rather than creating a parallel booking table (`DECIDED` per `TL-44`).
+  - **OQ-88**: 7-state booking lifecycle (`PENDING_PAYMENT -> CONFIRMED -> CHECKED_IN -> COMPLETED`, `CANCELLED`, `EXPIRED`, `NO_SHOW`) replacing legacy `'ACTIVE'` (`DECIDED` per `TL-44`).
+  - **OQ-89**: Dedicated `booking_policy` table (`1:1` with `parking_lot`) storing hold, grace, early check-in, advance days, duration, deposit, and free-cancel thresholds (`DECIDED` per `TL-44`).
+  - **OQ-90**: Dual GiST anti-overlap exclusion constraints (`excl_reservation_slot_time_overlap` and `excl_reservation_vehicle_time_overlap`) covering all holding states (`PENDING_PAYMENT`, `CONFIRMED`, `CHECKED_IN`) (`DECIDED` per `TL-44`).
+  - **OQ-91**: Unified deposit payments (`payment.reservation_id`), auto-confirmation trigger `fn_sync_reservation_on_payment()`, revenue recognition (`status = 'PAID'`), and `NUMERIC(12,2)` check-out deduction formula `fee_amount = GREATEST(0.00::NUMERIC(12,2), raw_session_fee - paid_deposit_amount)` (`DECIDED` per `TL-44`).
+  - **OQ-92**: Entry/exit log linking (`vehicle_entry_exit_log.reservation_id`) with auto-check-in within `[reserved_from - early_checkin_minutes, reserved_from + grace_minutes]` and auto-completion on exit (`DECIDED` per `TL-44`).
+  - **OQ-93**: Application-driven stale hold expiry and no-show sweep via `fn_expire_stale_bookings()` without `pg_cron` (`DECIDED` per `TL-44`).
+  - **OQ-94**: Analytical overview view `v_booking_overview` (`43` cols) and deferral of automatic `notification` table inserts to the plain-Python backend (`DECIDED` per `TL-44`).
+- **TL-36..TL-43 (Rounds 27–28 Technical Refinements)**:
+  - **TL-36**: Plain `DELETE` allowed on `persistent_login_token` and `password_reset_token` with RESTRICT FK and co-purge cleanup in `fn_controlled_purge()`.
+  - **TL-37**: Plain `DELETE` allowed on `slot_allowed_vehicle_type` guarded by active usage check (`PROP-DEL-SAVT-IN-USE`).
+  - **TL-38**: Slot allowed vehicle type compatibility validation across tickets, reservations, and entry logs (`PROP-SLOT-VEHICLE-TYPE-MISMATCH`).
+  - **TL-39**: Soft-delete guard for settled payments (`status IN ('PAID', 'REFUNDED')`, `PROP-DEL-PAYMENT-SETTLED`).
+  - **TL-40**: Retention floor enforcement (`>= 30 days`, `SQLSTATE 22023`) and per-row FK exception skipping in `fn_controlled_purge()`.
+  - **TL-41**: Substring text search acceleration via `pg_trgm` and 6 partial GIN trigram indexes.
+  - **TL-42**: Payment status transition matrix (`UNPAID -> PAID | CANCELLED`, `PAID -> REFUNDED` only; terminal `REFUNDED`/`CANCELLED`, `PROP-PAY-STATUS-TRANSITION`) and settled-payment financial/link immutability (`PROP-PAY-SETTLED-IMMUTABLE`) via `fn_guard_payment_update()`.
+  - **TL-43**: Extension-independent project function count (`deptype <> 'e'`) in `.github/workflows/01-db-schema-check.yml` (`"28 8 69 0 87 22"`).
+- **TL-44 (Round 24 Advance Slot Booking Schema & ERD Sync)**: Addition of `booking_policy` table (16 cols), 9 new columns on `slot_reservation`, `reservation_id` FK on `payment` and `vehicle_entry_exit_log`, view `v_booking_overview` (43 cols), 5 new FKs (total 74 FKs ON DELETE RESTRICT), and 6 new booking functions/triggers (total 28 user functions).
+
+---
+
+## 7. UML Entity Relationship Diagram (ERD) Specifications & Artifacts
+
+The database architecture is visually modeled and maintained through native Astah UML specifications conforming to the official OMG UML 2.1 standard and Astah Open API 12.0.0 guidelines:
+
+### 7.1. Diagram Deliverables & Formats
+
+- **Editable Source Model**: [`db/03-erd.asta`](03-erd.asta) — Native Astah UML 12.0.0 project file containing the complete Schema v2 object-oriented domain representation, classes, stereotypes, attributes, and associations.
+- **Master Overview Export**: [`db/04-erd.png`](04-erd.png) — High-resolution rendering exported at 400 DPI via the `astah-uml` MCP tool `astah_export_diagram_image` (Resolution: **4492 × 3021 px**, 38 classes, 74 FK links).
+- **Module Diagrams (5 Sub-systems with 100% Attribute & Business FK Coverage)**:
+  - [`db/05-erd-account-staff.png`](05-erd-account-staff.png) — Account, Authentication & Staff Management (**2220 × 1564 px**, 7 nodes: 5 expanded tables + 2 collapsed stubs, 7 links).
+  - [`db/06-erd-customer-vehicle.png`](06-erd-customer-vehicle.png) — Customer, Vehicle, Vehicle Types & Plate Blacklist (**3284 × 1785 px**, 9 nodes: 4 expanded tables + 5 collapsed stubs, 11 links).
+  - [`db/07-erd-parking-ticket.png`](07-erd-parking-ticket.png) — Parking Structure (`Lot -> Floor -> Zone -> Slot`), Reservations, Tariffs, Advance Policies & Ticketing Lifecycle (**3414 × 2977 px**, 16 nodes: 10 expanded tables + 6 collapsed stubs, 25 links).
+  - [`db/08-erd-operations-content.png`](08-erd-operations-content.png) — Gate Operations, Entry/Exit Sessions, Payments, Activity Feed, Alerts, News & Notifications (**4593 × 2269 px**, 20 nodes: 7 expanded tables + 13 collapsed stubs, 26 links).
+  - [`db/09-erd-reference-views.png`](09-erd-reference-views.png) — Administrative Geography (`Province -> District -> Ward`) & 9 Analytical Database Views (**3153 × 1988 px**, 12 expanded nodes: 3 tables + 9 views, 2 links).
+
+### 7.2. Model Metrics & Structural Parity (PostgreSQL 18.6 Schema v2 Match)
+
+The on-disk `db/03-erd.asta` is 100% synchronized with `db/01-schema.sql` (`29` tables, `9` views, `365` table columns, `98` view columns, `463` total attributes, `74` FK associations, and `0` missing non-`deleted_by` business FK links across all 6 diagrams `04..09`):
+
+- **38 Business Classes**:
+  - **29 Physical Tables**: Modeled as UML Classes adorned with the `«table»` stereotype, encompassing all `365` database table columns with constraint stereotypes (`«PK»`, `«FK»`, `«UQ»`, `«PUQ»`, `«UQ1»`, `«PUQ1»`, `«PUQ2»`).
+  - **9 Analytical Views**: Encapsulated within a dedicated `Views` UML Package (`v_slot_occupancy_by_floor`, `v_revenue_today_by_method`, `v_traffic_by_hour`, `v_ai_recognition_stats`, `v_customer_status_summary`, `v_revenue_statistics`, `v_vehicle_traffic_daily`, `v_customer_vehicle_summary`, `v_booking_overview`) with the `«view»` stereotype (`98` view attributes total).
+- **22 SQL Primitive Datatype Classes Encapsulated**:
+  - `22` SQL primitive types (`BIGINT`, `INTEGER`, `SMALLINT`, `VARCHAR(10)`, `VARCHAR(15)`, `VARCHAR(20)`, `VARCHAR(30)`, `VARCHAR(45)`, `VARCHAR(50)`, `VARCHAR(64)`, `VARCHAR(100)`, `VARCHAR(150)`, `VARCHAR(200)`, `VARCHAR(220)`, `VARCHAR(255)`, `VARCHAR(500)`, `TEXT`, `BOOLEAN`, `DATE`, `TIMESTAMPTZ`, `NUMERIC(5, 2)`, `NUMERIC(12, 2)`) are encapsulated within a dedicated `DataTypes` package.
+  - Total classes in `03-erd.asta`: `60` classes (`38` business entities + `22` datatype classes).
+- **74 Foreign Key Associations (100% Populated & Modeled on `ERD_Overview`, 100% Business FKs Drawn on `05..09`)**:
+  - 100% of physical relational constraints are modeled as directed associations from child table to parent table with exact multiplicities (`0..1 -> 1` for `fk_customer_account`, `fk_employee_account`, `fk_booking_policy_lot`, `0..1 -> 0..1` for `fk_log_reservation`, `0..* -> 1` for required FKs, and `0..* -> 0..1` for nullable FKs).
+  - **19 Soft-Deletion Audit Links**: All `19` `deleted_by -> account` foreign keys (including `booking_policy`) are modeled and rendered on `ERD_Overview` using quiet grey lines (`#B0BEC5`).
+
+### 7.3. Constraint Stereotype Conventions & Legend Note
+
+Composite and partial unique constraints are explicitly marked using standardized UML stereotypes:
+
+- `«PK»`: Primary key (single column or component of composite PK).
+- `«FK»`: Foreign key referencing parent entity.
+- `«UQ»`: Standard global single-column unique constraint (e.g., `persistent_login_token.series`, `password_reset_token.token_hash`, `vehicle_entry_exit_log.session_code`, `administrative_province.code`).
+- `«PUQ»`: Active-record partial unique index (filtered by `WHERE deleted_at IS NULL` or active session), applied to `account.email`, `account.phone`, `employee.code`, `employee.identity_card_number`, `customer.code`, `customer.email`, `vehicle.license_plate_norm`, `plate_blacklist.license_plate_norm`, `vehicle_entry_exit_log.license_plate_norm`, `booking_policy.lot_id`, etc.
+- Composite Multi-Column Stereotypes:
+  - `parking_slot`: `zone_id`: `«FK, PUQ1, PUQ2»`, `code`: `«PUQ1»`, `map_row`: `«PUQ2»`, `map_col`: `«PUQ2»` (enforcing zone-scoped code and 2D grid position uniqueness for active slots).
+  - `parking_floor`: `lot_id`: `«FK, PUQ1»`, `code`: `«PUQ1»`.
+  - `parking_zone`: `floor_id`: `«FK, PUQ1»`, `code`: `«PUQ1»`.
+  - `parking_gate`: `lot_id`: `«FK, PUQ1»`, `code`: `«PUQ1»`.
+  - `vehicle`: `id`: `«PK, UQ1»`, `customer_id`: `«FK, UQ1»` (enforcing composite parentage integrity for tickets).
+  - `administrative_district`: `id`: `«PK, UQ1»`, `province_id`: `«FK, UQ1»`.
+  - `administrative_ward`: `id`: `«PK, UQ1»`, `district_id`: `«FK, UQ1»`.
+- **UML Legend Note**: Rendered on `ERD_Overview` (`db/04-erd.png`) with zero relationship lines crossing the note box, documenting the `29` tables (`365` attributes), `9` views (`98` attributes), `38` classes (`463` attributes), and `74` FK links (`19` `deleted_by` links in `#B0BEC5`).
+
+### 7.4. Visual Readability & Layout Architecture
+
+- **Master Overview (`db/04-erd.png`) - 100% Visual Association Coverage**:
+  - **All 74 Relationships Visually Rendered**: 100% of the `74` associations (`55` business FKs in `#37474F` and `19` `deleted_by` FKs in `#B0BEC5`) are rendered on the canvas with `0` table crossings and `0` label/multiplicity overlaps.
+- **5 Detailed Module Diagrams (`05`..`09`) - Orthogonal Layout**:
+  - Primary subsystem tables display **100% of attributes and column types** (`365` table attributes + `98` view attributes = `463` total attributes across the 5 module diagrams).
+  - Inter-module relationships are linked via **Collapsed Neighbor Stubs** (`#ECEFF1`) with at most `1` link per stub side (`0` stub-side sharing violations) and `100%` of non-`deleted_by` business FKs between present tables drawn (`7` on `05`, `11` on `06`, `25` on `07`, `26` on `08`, `2` on `09`).
+- **Automated Geometry Verification**:
+  - `ERD_Overview`: Table Crossings = **0**, Missing FKs = **0** (`74` links: `55` business + `19` `deleted_by`).
+  - `Account_Staff`: Table Crossings = **0**, Missing Business FKs = **0**, Stub Side Violations = **0** (`7` links).
+  - `Customer_Vehicle`: Table Crossings = **0**, Missing Business FKs = **0**, Stub Side Violations = **0** (`11` links).
+  - `Parking_Ticket`: Table Crossings = **0**, Missing Business FKs = **0**, Stub Side Violations = **0** (`25` links).
+  - `Operations_Content`: Table Crossings = **0**, Missing Business FKs = **0**, Stub Side Violations = **0** (`26` links).
+  - `Reference_Views`: Table Crossings = **0**, Missing Business FKs = **0**, Stub Side Violations = **0** (`2` links).
+  - **TOTAL**: Table Crossings = **0**, Missing Business FKs Across All 6 Diagrams = **0**, Stub Side Violations = **0**.
+
+### 7.5. Cryptographic Deliverables Verification (SHA-256 Checksums)
+
+All ERD deliverables are verified with SHA-256 checksums:
+
+| Artifact File | Description | SHA-256 Checksum | Dimensions / File Size |
+|---|---|---|---|
+| `03-erd.asta` | Master Astah UML Model | `dac007d8960a1581e32d9460650ad4dd8aa1c4148f5442701fdd6e26c69564db` | 119,832 bytes |
+| `04-erd.png` | Master ERD Overview (74 Links) | `77e0b87136741a4e83850d64088be51995b0f8cce5da1b7c3eb91093b5186bf4` | 4492 × 3021 px (381,292 bytes) |
+| `05-erd-account-staff.png` | Account & Staff Module ERD (7 Links) | `bcebae58d9752576ece0783e455b35f91e8fbc4c0777a5d06747de7afac46db3` | 2220 × 1564 px (170,673 bytes) |
+| `06-erd-customer-vehicle.png` | Customer & Vehicle Module ERD (11 Links) | `09c36710ba0c12c0e28d219322629b6a60f5a74feabfe0be7f5b108ac7fb272b` | 3284 × 1785 px (220,186 bytes) |
+| `07-erd-parking-ticket.png` | Parking & Ticket Module ERD (25 Links) | `96342750eede5e863c21891840de78baed043511698fc8811c1f510955806a83` | 3414 × 2977 px (479,660 bytes) |
+| `08-erd-operations-content.png` | Operations & Content Module ERD (26 Links) | `08232185eb325fff45ba593ded6d8f8b1b3bd63985ed82ba52cf1e83ba65493f` | 4593 × 2269 px (395,133 bytes) |
+| `09-erd-reference-views.png` | Reference & Views Module ERD (2 Links) | `7a38a233a3faf0c936d01f29e886a115b5fd61b48b8263c1f1655d890ea33e0d` | 3153 × 1988 px (275,388 bytes) |
+
+### 7.6. Method Disclosure & Integrity Attestation
+
+- **Model Regeneration & Routing via Live MCP (Round 24)**: Updated on a temporary sandbox copy outside the repository exclusively via the `astah-uml` MCP tools (`astah_open_project`, `astah_delete_element`, `astah_create_class`, `astah_add_attribute`, `astah_create_relationship`, `astah_delete_presentation`, `astah_add_presentation_node`, `astah_add_presentation_link`, `astah_set_presentation_style`, `astah_set_note_text`, `astah_save_project`, `astah_close_project`), before SHA-256-verified copy back to `db/`.
+- **Export Pipeline via Live MCP**: Exported through the `astah-uml` MCP tool `astah_export_diagram_image` (`dpi=400`, `format="png"`, backed by Astah's official batch CLI command engine `astah-command.bat` / `JudeCommandRunner`).
+- **Verification**: A read-only Astah API check on a copy of `03-erd.asta` verified `0` model differences against the live PostgreSQL 18.6 catalog (`29` tables, `9` views, `22` data types, `365` table attributes, `98` view attributes, `74` associations), `0` missing non-`deleted_by` foreign keys across `05..09`, `0` stub-side sharing violations, and `0` link-through-table crossings. Display in the Astah GUI was verified directly via exported 400 DPI images.
