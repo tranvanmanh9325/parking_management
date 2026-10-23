@@ -1779,6 +1779,7 @@ COMMENT ON COLUMN notification.deleted_by IS 'Tài khoản thực hiện xoá m�
 -- 8.1. View: v_slot_occupancy_by_floor (Sức chứa và mức sử dụng ô đỗ)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_slot_occupancy_by_floor AS
+-- Bảng tạm open_sessions: Ô đang có xe đỗ (phiên chưa ra; xe và khách chưa bị xoá mềm)
 WITH open_sessions AS (
     SELECT DISTINCT l.slot_id
     FROM vehicle_entry_exit_log l
@@ -1788,6 +1789,7 @@ WITH open_sessions AS (
       AND l.slot_id IS NOT NULL
       AND (l.vehicle_id IS NULL OR (v.deleted_at IS NULL AND c.deleted_at IS NULL))
 ),
+-- Bảng tạm active_tickets: Ô đang có vé hiệu lực (ACTIVE hoặc RENEWING, còn hạn)
 active_tickets AS (
     SELECT DISTINCT t.slot_id
     FROM ticket t
@@ -1798,6 +1800,7 @@ active_tickets AS (
       AND CURRENT_TIMESTAMP >= t.effective_from
       AND CURRENT_TIMESTAMP < t.effective_to
 ),
+-- Bảng tạm active_reservations: Ô đang được đặt chỗ (chờ thanh toán hoặc đã xác nhận, chưa hết hạn)
 active_reservations AS (
     SELECT DISTINCT r.slot_id
     FROM slot_reservation r
@@ -1809,6 +1812,7 @@ active_reservations AS (
       AND (r.vehicle_id IS NULL OR v.deleted_at IS NULL)
       AND (r.customer_id IS NULL OR c.deleted_at IS NULL)
 ),
+-- Bảng tạm slot_states: Trạng thái hiệu lực của từng ô, tính từ phiên đỗ, vé và đặt chỗ
 slot_states AS (
     SELECT
         pl.id AS lot_id,
@@ -1872,6 +1876,7 @@ COMMENT ON VIEW v_slot_occupancy_by_floor IS 'Thống kê sức chứa và mức
 -- 8.2. View: v_revenue_today_by_method (Doanh thu hôm nay theo hình thức thanh toán)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_revenue_today_by_method AS
+-- Bảng tạm today_payments: Các chứng từ đã thanh toán (PAID) trong ngày hôm nay
 WITH today_payments AS (
     SELECT
         p.method,
@@ -1909,6 +1914,7 @@ COMMENT ON VIEW v_revenue_today_by_method IS 'Thống kê doanh thu hôm nay (CU
 -- 8.3. View: v_traffic_by_hour (Lượt xe vào/ra theo giờ)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_traffic_by_hour AS
+-- Bảng tạm active_sessions: Các phiên ra/vào hợp lệ (ô, xe, khách, vé liên quan chưa bị xoá mềm)
 WITH active_sessions AS (
     SELECT
         l.entry_time,
@@ -1922,6 +1928,7 @@ WITH active_sessions AS (
       AND (l.vehicle_id IS NULL OR (v.deleted_at IS NULL AND c.deleted_at IS NULL))
       AND (l.ticket_id IS NULL OR t.deleted_at IS NULL)
 ),
+-- Bảng tạm entry_hours: Số lượt xe vào theo từng giờ
 entry_hours AS (
     SELECT
         DATE_TRUNC('hour', entry_time) AS traffic_hour,
@@ -1929,6 +1936,7 @@ entry_hours AS (
     FROM active_sessions
     GROUP BY DATE_TRUNC('hour', entry_time)
 ),
+-- Bảng tạm exit_hours: Số lượt xe ra theo từng giờ
 exit_hours AS (
     SELECT
         DATE_TRUNC('hour', exit_time) AS traffic_hour,
@@ -2002,6 +2010,7 @@ COMMENT ON VIEW v_customer_status_summary IS 'Gồm bốn số tổng hợp khá
 -- 8.6. View: v_revenue_statistics (Doanh thu theo năm, quý, tháng)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_revenue_statistics AS
+-- Bảng tạm financial_events: Các khoản doanh thu: tiền vé và phí gia hạn, gộp bằng UNION ALL
 WITH financial_events AS (
     SELECT
         EXTRACT(YEAR FROM t.created_at)::INTEGER AS report_year,
@@ -2058,6 +2067,7 @@ COMMENT ON VIEW v_revenue_statistics IS 'Thống kê doanh thu theo năm, quý, 
 -- 8.7. View: v_vehicle_traffic_daily (Lượt xe vào/ra theo ngày)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_vehicle_traffic_daily AS
+-- Bảng tạm active_sessions: Các phiên ra/vào hợp lệ (ô, xe, khách, vé liên quan chưa bị xoá mềm)
 WITH active_sessions AS (
     SELECT
         l.entry_time,
@@ -2071,6 +2081,7 @@ WITH active_sessions AS (
       AND (l.vehicle_id IS NULL OR (v.deleted_at IS NULL AND c.deleted_at IS NULL))
       AND (l.ticket_id IS NULL OR t.deleted_at IS NULL)
 ),
+-- Bảng tạm entry_daily: Số lượt vào và số xe đang đỗ theo từng ngày
 entry_daily AS (
     SELECT
         entry_time::DATE AS traffic_date,
@@ -2079,6 +2090,7 @@ entry_daily AS (
     FROM active_sessions
     GROUP BY entry_time::DATE
 ),
+-- Bảng tạm exit_daily: Số lượt xe ra theo từng ngày
 exit_daily AS (
     SELECT
         exit_time::DATE AS traffic_date,
@@ -2102,6 +2114,7 @@ COMMENT ON VIEW v_vehicle_traffic_daily IS 'Thống kê số lượt vào, ra v�
 -- 8.8. View: v_customer_vehicle_summary (Số xe và vé của mỗi khách)
 -- -----------------------------------------------------------------------------
 CREATE VIEW v_customer_vehicle_summary AS
+-- Bảng tạm vehicle_counts: Số xe đã đăng ký của mỗi khách hàng
 WITH vehicle_counts AS (
     SELECT
         v.customer_id,
@@ -2111,6 +2124,7 @@ WITH vehicle_counts AS (
     WHERE v.deleted_at IS NULL
     GROUP BY v.customer_id
 ),
+-- Bảng tạm ticket_counts: Số vé đang hiệu lực của mỗi khách hàng
 ticket_counts AS (
     SELECT
         t.customer_id,
